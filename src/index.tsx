@@ -26,6 +26,7 @@ async function boot(): Promise<void> {
       ? new OpenAIProvider(config.apiKey, config.model)
       : new AnthropicProvider(config.apiKey, config.model);
   const registry = defaultRegistry();
+  const store = new SessionStore();
 
   let uiGate: UiGate = NOOP_UI_GATE;
   let permGate: PermissionGate = new AutoApproveGate();
@@ -35,9 +36,9 @@ async function boot(): Promise<void> {
     permGate = askGate;
   }
 
-  const service = await ChatService.start(provider, new SessionStore(), registry, permGate, flags);
+  const service = await ChatService.start(provider, store, registry, permGate, flags);
 
-  render(<App service={service} gate={uiGate} />);
+  render(<App service={service} gate={uiGate} store={store} />);
 }
 
 boot().catch((err) => {

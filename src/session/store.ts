@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ChatMessage } from "../agent/types.js";
@@ -55,24 +55,30 @@ export class SessionStore {
     return parseSession(raw);
   }
 
-  /** Most recent session by createdAt, or undefined when none exist. */
-  async latest(): Promise<LoadedSession | undefined> {
+  /** All sessions, newest first. */
+  async list(): Promise<LoadedSession[]> {
     let files: string[];
     try {
       files = await readdir(this.dir);
     } catch {
-      return undefined;
+      return [];
     }
-    let best: LoadedSession | undefined;
+    const sessions: LoadedSession[] = [];
     for (const file of files) {
       if (!file.endsWith(".jsonl")) continue;
-      const id = file.slice(0, -".jsonl".length);
-      const session = await this.load(id);
-      if (session && (!best || session.meta.createdAt > best.meta.createdAt)) {
-        best = session;
-      }
+      const session = await this.load(file.slice(0, -".jsonl".length));
+      if (session) sessions.push(session);
     }
-    return best;
+    return sessions.sort((a, b) => (a.meta.createdAt < b.meta.createdAt ? 1 : -1));
+  }
+
+  /** Most recent session by createdAt, or undefined when none exist. */
+  async latest(): Promise<LoadedSession | undefined> {
+    return (await this.list())[0];
+  }
+
+  async delete(id: string): Promise<void> {
+    await rm(this.#file(id), { force: true });
   }
 }
 

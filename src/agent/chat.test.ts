@@ -132,4 +132,41 @@ describe("ChatService agent loop", () => {
     assert.ok(result && result.type === "tool-result");
     assert.match(result.output, /unknown tool/i);
   });
+
+  it("newSession() resets history and switches the active id", async () => {
+    const { service } = await makeService(
+      [{ role: "assistant", content: "answer one" }],
+      new AutoApproveGate(),
+    );
+    await collect(service.send("first question"));
+    const oldId = service.id;
+    assert.ok(service.messages.some((m) => m.role === "user"));
+
+    await service.newSession();
+
+    assert.notEqual(service.id, oldId);
+    assert.ok(!service.messages.some((m) => m.role === "user")); // only system remains
+    assert.equal(service.messages.length, 1);
+  });
+
+  it("switchTo() loads a prior session's history", async () => {
+    const { service } = await makeService(
+      [{ role: "assistant", content: "answer one" }],
+      new AutoApproveGate(),
+    );
+    await collect(service.send("remember this"));
+    const targetId = service.id;
+
+    await service.newSession();
+    assert.ok(!service.messages.some((m) => m.role === "user"));
+
+    const loaded = await service.switchTo(targetId);
+    assert.equal(loaded.meta.id, targetId);
+    assert.ok(service.messages.some((m) => m.role === "user" && m.content === "remember this"));
+    // new messages keep appending to the switched session
+    assert.deepEqual(
+      service.messages.slice(-2).map((m) => m.role),
+      ["user", "assistant"],
+    );
+  });
 });

@@ -3,9 +3,32 @@ import React, { useEffect, useRef, useState } from "react";
 import TextInput from "ink-text-input";
 import type { ChatEvent, ChatService } from "../agent/chat.js";
 import type { PermissionRequest, UiGate } from "../permissions/gate.js";
+import type { LoadedSession, SessionStore } from "../session/store.js";
 import { MarkdownLite } from "./markdown.js";
+import { SessionBrowser } from "./session-browser.js";
+import { suggestCommands } from "./commands.js";
+import type { ChatMessage } from "../agent/types.js";
 
 const DOTS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+function ToolLine({ entry }: { entry: Extract<Entry, { kind: "tool" }> }): React.ReactElement {
+  const [icon, color] =
+    entry.status === "done"
+      ? ["✓", "green"]
+      : entry.status === "denied"
+        ? ["✗", "red"]
+        : ["⚙", "yellow"];
+  return (
+    <Text>
+      {"  "}
+      <Text color={color}>{icon} </Text>
+      <Text dimColor>
+        {entry.toolName} — {entry.detail}
+        {entry.status === "running" ? "…" : ""}
+      </Text>
+    </Text>
+  );
+}
 
 function DotsSpinner({ label }: { label: string }): React.ReactElement {
   const [frame, setFrame] = useState(0);
@@ -31,31 +54,19 @@ type Entry =
       detail: string;
     };
 
-function ToolLine({ entry }: { entry: Extract<Entry, { kind: "tool" }> }): React.ReactElement {
-  const [icon, color] =
-    entry.status === "done"
-      ? ["✓", "green"]
-      : entry.status === "denied"
-        ? ["✗", "red"]
-        : ["⚙", "yellow"];
-  return (
-    <Text>
-      {"  "}
-      <Text color={color}>{icon} </Text>
-      <Text dimColor>
-        {entry.toolName} — {entry.detail}
-        {entry.status === "running" ? "…" : ""}
-      </Text>
-    </Text>
-  );
+interface BrowserState {
+  sessions: LoadedSession[];
+  selected: number;
 }
 
 export function App({
   service,
   gate,
+  store,
 }: {
   service: ChatService;
   gate: UiGate;
+  store: SessionStore;
 }): React.ReactElement {
   const { exit } = useApp();
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -65,7 +76,11 @@ export function App({
   const [value, setValue] = useState("");
   const [pending, setPending] = useState<PermissionRequest[]>([]);
   const [allowedRules, setAllowedRules] = useState<readonly string[]>([]);
+  const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+  const [browser, setBrowser] = useState<BrowserState | undefined>();
   const abortRef = useRef<AbortController | undefined>(undefined);
+
+  const suggestions = suggestCommands(value);
 
   useEffect(() => {
     gate.onPendingChange((p) => {
@@ -75,47 +90,181 @@ export function App({
     return () => gate.onPendingChange(() => {});
   }, [gate]);
 
+  useEffect(() => setSelectedSuggestion(0), [value]);
+
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       abortRef.current?.abort();
       exit();
       return;
     }
-    const current = pending[0];
-    if (!current) return;
-    if (input === "y") gate.respond(current.id, "once");
-    if (input === "n") gate.respond(current.id, "deny");
-    if (input === "a" && current.ruleKey !== undefined) {
-      gate.respond(current.id, "always");
-      setEntries((prev) => [
-        ...prev,
-        {
-          kind: "notice",
-          text: `always allowing ${current.toolName} · ${current.ruleKey} this session`,
-        },
-      ]);
+
+    if (browser !== undefined) {
+      if (key.upArrow) {
+        setBrowser((b) =>
+          b === undefined ? b : { ...b, selected: Math.max(0, b.selected - 1) },
+        );
+      } else if (key.downArrow) {
+        setBrowser((b) =>
+          b === undefined
+            ? b
+            : { ...b, selected: Math.min(b.sessions.length - 1, b.selected + 1) },
+        );
+      } else if (input === "s") {
+        void switchToSession(browser);
+      } else if (input === "d") {
+        void deleteSession(browser);
+      } else if (key.escape || input === "q") {
+        setBrowser(undefined);
+      }
+      return;
+    }
+
+    const currentRequest = pending[0];
+    if (currentRequest) {
+      if (input === "y") gate.respond(currentRequest.id, "once");
+      if (input === "n") gate.respond(currentRequest.id, "deny");
+      if (input === "a" && currentRequest.ruleKey !== undefined) {
+        gate.respond(currentRequest.id, "always");
+        setEntries((prev) => [
+          ...prev,
+          {
+            kind: "notice",
+            text: `always allowing ${currentRequest.toolName} · ${currentRequest.ruleKey} this session`,
+          },
+        ]);
+      }
+      return;
+    }
+
+    // slash-command palette navigation
+    if (suggestions.length > 0 && !busy) {
+      if (key.upArrow) {
+        setSelectedSuggestion((s) => (s - 1 + suggestions.length) % suggestions.length);
+        return;
+      }
+      if (key.downArrow) {
+        setSelectedSuggestion((s) => (s + 1) % suggestions.length);
+        return;
+      }
+      if (key.tab) {
+        setValue(`/${suggestions[selectedSuggestion]?.name ?? suggestions[0]?.name ?? ""}`);
+        return;
+      }
     }
   });
+
+  const switchToSession = async (state: BrowserState): Promise<void> => {
+    const target = state.sessions[state.selected];
+    if (!target) return;
+    try {
+      const loaded = await service.switchTo(target.meta.id);
+      setBrowser(undefined);
+      setEntries([
+        {
+          kind: "notice",
+          text: `switched to session ${loaded.meta.id} (${loaded.messages.length} messages)`,
+        },
+        ...loaded.messages
+          .filter(
+            (m): m is Extract<ChatMessage, { role: "user" | "assistant" }> =>
+              m.role === "user" || m.role === "assistant",
+          )
+          .map((m): Entry => ({
+            kind: "message",
+            role: m.role,
+            content: m.content,
+          })),
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const deleteSession = async (state: BrowserState): Promise<void> => {
+    const target = state.sessions[state.selected];
+    if (!target) return;
+    await store.delete(target.meta.id);
+    const wasCurrent = target.meta.id === service.id;
+    const remaining = (await store.list()).filter((s) => s.meta.id !== target.meta.id);
+    if (wasCurrent) {
+      await service.newSession();
+      setEntries([
+        {
+          kind: "notice",
+          text: `deleted ${target.meta.id} (was current) — started ${service.id}`,
+        },
+      ]);
+    } else {
+      setEntries((prev) => [
+        ...prev,
+        { kind: "notice", text: `deleted session ${target.meta.id}` },
+      ]);
+    }
+    setBrowser({ sessions: remaining, selected: 0 });
+  };
+
+  const executeCommand = (command: string): boolean => {
+    switch (command) {
+      case "/exit":
+        abortRef.current?.abort();
+        exit();
+        return true;
+      case "/help":
+        setEntries((prev) => [
+          ...prev,
+          {
+            kind: "notice",
+            text: "commands: /help, /new, /session, /exit · permissions: y once, n no, a always this session · flags: --yolo, --provider, --continue",
+          },
+        ]);
+        return true;
+      case "/new":
+        if (busy || pending.length > 0) return false;
+        void (async () => {
+          await service.newSession();
+          setEntries([
+            { kind: "notice", text: `started new session ${service.id}` },
+          ]);
+        })();
+        return true;
+      case "/session":
+        if (busy || pending.length > 0) return false;
+        void (async () => {
+          setBrowser({ sessions: await store.list(), selected: 0 });
+        })();
+        return true;
+      default:
+        return false;
+    }
+  };
 
   const submit = (): void => {
     const trimmed = value.trim();
     if (!trimmed) return;
-    if (trimmed === "/exit") {
-      abortRef.current?.abort();
-      exit();
-      return;
-    }
-    if (trimmed === "/help") {
-      setEntries((prev) => [
-        ...prev,
-        {
-          kind: "notice",
-          text: "commands: /help, /exit · permissions: y = once, n = no, a = always for this session · launch flags: --yolo, --provider openai|anthropic, --continue",
-        },
-      ]);
+
+    // exact command wins immediately (even mid-busy for /exit)
+    if (executeCommand(trimmed)) {
       setValue("");
       return;
     }
+
+    // still typing a bare "/xyz": complete highlighted suggestion or reject
+    if (/^\/[a-zA-Z]*$/.test(trimmed)) {
+      const pick =
+        suggestions.length > 0 ? suggestions[Math.min(selectedSuggestion, suggestions.length - 1)] : undefined;
+      if (pick !== undefined) {
+        setValue(`/${pick.name}`);
+      } else {
+        setEntries((prev) => [
+          ...prev,
+          { kind: "notice", text: `unknown command "${trimmed}" — try /help` },
+        ]);
+        setValue("");
+      }
+      return;
+    }
+
     if (busy || pending.length > 0) return;
     setValue("");
 
@@ -191,6 +340,14 @@ export function App({
         </Box>
       ) : null}
 
+      {browser !== undefined ? (
+        <SessionBrowser
+          sessions={browser.sessions}
+          currentId={service.id}
+          selected={browser.selected}
+        />
+      ) : null}
+
       {currentRequest ? (
         <Box borderStyle="round" borderColor="yellow" paddingX={1}>
           <Text>
@@ -208,15 +365,30 @@ export function App({
         </Box>
       ) : null}
 
-      {!busy && !currentRequest && (
-        <Box borderStyle="round" borderColor="gray" paddingX={1}>
-          <TextInput
-            value={value}
-            onChange={setValue}
-            onSubmit={submit}
-            placeholder="Type a message… (/exit to quit)"
-          />
-        </Box>
+      {!busy && !currentRequest && browser === undefined && (
+        <>
+          {suggestions.length > 0 && (
+            <Box flexDirection="column">
+              {suggestions.map((command, i) => (
+                <Text key={command.name}>
+                  <Text inverse={i === selectedSuggestion} color={i === selectedSuggestion ? "blue" : undefined}>
+                    {`/${command.name}`.padEnd(11)}
+                  </Text>
+                  <Text dimColor> {command.description}</Text>
+                </Text>
+              ))}
+              <Text dimColor> ↑/↓ select · tab complete · enter run</Text>
+            </Box>
+          )}
+          <Box borderStyle="round" borderColor="gray" paddingX={1}>
+            <TextInput
+              value={value}
+              onChange={setValue}
+              onSubmit={submit}
+              placeholder='Type a message… ("/" for commands)'
+            />
+          </Box>
+        </>
       )}
 
       <Box marginTop={1}>

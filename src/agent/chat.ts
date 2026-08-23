@@ -54,7 +54,7 @@ export class ChatService {
   #gate: PermissionGate;
   #context: ContextManager;
   #history: ChatMessage[];
-  readonly meta: SessionMeta;
+  #meta: SessionMeta;
   readonly cwd: string;
 
   private constructor(
@@ -73,7 +73,7 @@ export class ChatService {
     this.#registry = registry;
     this.#gate = gate;
     this.#context = context;
-    this.meta = meta;
+    this.#meta = meta;
     this.#history = [system(buildSystemPrompt(cwd, topLevel)), ...history];
     this.cwd = cwd;
   }
@@ -131,11 +131,42 @@ export class ChatService {
   }
 
   get id(): string {
-    return this.meta.id;
+    return this.#meta.id;
+  }
+
+  get meta(): SessionMeta {
+    return this.#meta;
   }
 
   get messages(): readonly ChatMessage[] {
     return this.#history;
+  }
+
+  /** Abandon the current conversation and start a fresh Session. */
+  async newSession(): Promise<void> {
+    const meta: SessionMeta = {
+      id: SessionStore.newId(),
+      provider: this.#provider.name,
+      model: this.#provider.model,
+      createdAt: new Date().toISOString(),
+    };
+    await this.#store.create(meta);
+    this.#resetTo(meta, []);
+  }
+
+  /** Load an existing session by id, replacing the in-memory history. */
+  async switchTo(id: string): Promise<LoadedSession> {
+    const loaded = await this.#store.load(id);
+    if (!loaded) throw new Error(`Session not found: ${id}`);
+    this.#resetTo(loaded.meta, loaded.messages);
+    return loaded;
+  }
+
+  #resetTo(meta: SessionMeta, history: ChatMessage[]): void {
+    this.#meta = meta;
+    // keep only the system prompt from the old history
+    this.#history = this.#history.filter((m) => m.role === "system");
+    this.#history.push(...history);
   }
 
   /**
@@ -251,7 +282,7 @@ export class ChatService {
 
   async #persist(message: ChatMessage): Promise<void> {
     this.#history.push(message);
-    await this.#store.append(this.meta.id, message);
+    await this.#store.append(this.#meta.id, message);
   }
 }
 

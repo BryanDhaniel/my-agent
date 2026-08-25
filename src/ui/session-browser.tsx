@@ -1,6 +1,8 @@
 import { Box, Text } from "ink";
 import React from "react";
 import type { LoadedSession, SessionStore } from "../session/store.js";
+import { Rule } from "./ink.js";
+import { INK, MARK, SPACE, label } from "./theme.js";
 
 function timeAgo(iso: string): string {
   const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -22,28 +24,41 @@ export function SessionBrowser({
   selected: number;
 }): React.ReactElement {
   return (
-    <Box borderStyle="round" borderColor="blue" paddingX={1} flexDirection="column">
-      <Text bold color="blue">
-        sessions{" "}
-        <Text dimColor>↑/↓ select · s switch · d delete · esc close</Text>
-      </Text>
+    <Box flexDirection="column" marginY={1}>
+      <Rule weight="heavy" />
+      <Box marginLeft={SPACE.contentIndent}>
+        <Text>
+          <Text {...INK.strong}>{label("sessions")} </Text>
+          <Text {...INK.ghost}>↑/↓ select · s switch · d delete · esc close</Text>
+        </Text>
+      </Box>
       {sessions.length === 0 ? (
-        <Text dimColor> no sessions yet</Text>
+        <Box marginLeft={SPACE.contentIndent}>
+          <Text {...INK.ghost}>no sessions yet</Text>
+        </Box>
       ) : (
-        sessions.map((session, i) => (
-          <Box key={session.meta.id}>
-            <Text
-              color={i === selected ? "blue" : undefined}
-              inverse={i === selected}
-            >
-              {i === selected ? "▸ " : "  "}
-              {session.meta.id === currentId ? "● " : "  "}
-              {session.meta.id} · {session.meta.provider}/{session.meta.model} ·{" "}
-              {session.messages.length} msgs · {timeAgo(session.meta.createdAt)}
-            </Text>
-          </Box>
-        ))
+        sessions.map((session, i) => {
+          const isSelected = i === selected;
+          const isCurrent = session.meta.id === currentId;
+          return (
+            <Box key={session.meta.id} marginLeft={SPACE.contentIndent}>
+              <Text inverse={isSelected}>
+                {isSelected ? "▸ " : "  "}
+                <Text {...(isCurrent ? INK.body : INK.faint)}>
+                  {isCurrent ? MARK.sessionCurrent : MARK.sessionOther}{" "}
+                </Text>
+                {session.meta.id}
+                <Text {...INK.ghost}>
+                  {" "}
+                  · {session.meta.provider}/{session.meta.model} ·{" "}
+                  {session.messages.length} msgs · {timeAgo(session.meta.createdAt)}
+                </Text>
+              </Text>
+            </Box>
+          );
+        })
       )}
+      <Rule weight="light" />
     </Box>
   );
 }

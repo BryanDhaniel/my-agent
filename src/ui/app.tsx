@@ -1,58 +1,38 @@
 import { Box, Static, Text, useApp, useInput } from "ink";
 import React, { useEffect, useRef, useState } from "react";
 import TextInput from "ink-text-input";
-import type { ChatEvent, ChatService } from "../agent/chat.js";
+import type { ChatService } from "../agent/chat.js";
 import type { PermissionRequest, UiGate } from "../permissions/gate.js";
 import type { LoadedSession, SessionStore } from "../session/store.js";
+import type { ChatMessage } from "../agent/types.js";
 import { MarkdownLite } from "./markdown.js";
 import { SessionBrowser } from "./session-browser.js";
 import { suggestCommands } from "./commands.js";
-import type { ChatMessage } from "../agent/types.js";
-
-const DOTS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-
-function ToolLine({ entry }: { entry: Extract<Entry, { kind: "tool" }> }): React.ReactElement {
-  const [icon, color] =
-    entry.status === "done"
-      ? ["✓", "green"]
-      : entry.status === "denied"
-        ? ["✗", "red"]
-        : ["⚙", "yellow"];
-  return (
-    <Text>
-      {"  "}
-      <Text color={color}>{icon} </Text>
-      <Text dimColor>
-        {entry.toolName} — {entry.detail}
-        {entry.status === "running" ? "…" : ""}
-      </Text>
-    </Text>
-  );
-}
-
-function DotsSpinner({ label }: { label: string }): React.ReactElement {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => setFrame((f) => (f + 1) % DOTS.length), 80);
-    return () => clearInterval(timer);
-  }, []);
-  return (
-    <Text>
-      <Text color="cyan">{DOTS[frame]}</Text> {label}
-    </Text>
-  );
-}
-
-type Entry =
-  | { kind: "message"; role: "user" | "assistant"; content: string }
-  | { kind: "notice"; text: string }
-  | {
-      kind: "tool";
-      callId: string;
-      toolName: string;
-      status: "running" | "done" | "denied";
-      detail: string;
-    };
+import {
+  EmptyPaper,
+  ErrorLine,
+  InkDropSpinner,
+  NoticeLine,
+  Paper,
+  PaperText,
+  PermissionBlock,
+  RoleBlock,
+  Rule,
+  SealHeader,
+  SuggestionList,
+  ToolStatusLine,
+} from "./ink.js";
+import {
+  appendNotice,
+  initialViewState,
+  reduceChatEvent,
+  replaceEntries,
+  setError,
+  setBusy,
+  type ChatViewState,
+  type ViewEntry,
+} from "./view.js";
+import { MARK, SPACE } from "./theme.js";
 
 interface BrowserState {
   sessions: LoadedSession[];
@@ -69,18 +49,18 @@ export function App({
   store: SessionStore;
 }): React.ReactElement {
   const { exit } = useApp();
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [liveText, setLiveText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>();
+  const [view, setView] = useState<ChatViewState>(initialViewState);
   const [value, setValue] = useState("");
   const [pending, setPending] = useState<PermissionRequest[]>([]);
   const [allowedRules, setAllowedRules] = useState<readonly string[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [browser, setBrowser] = useState<BrowserState | undefined>();
+  const [verboseTool, setVerboseTool] = useState(false);
   const abortRef = useRef<AbortController | undefined>(undefined);
 
   const suggestions = suggestCommands(value);
+  const busy = view.busy;
+  const currentRequest = pending[0];
 
   useEffect(() => {
     gate.onPendingChange((p) => {
@@ -120,24 +100,28 @@ export function App({
       return;
     }
 
-    const currentRequest = pending[0];
     if (currentRequest) {
       if (input === "y") gate.respond(currentRequest.id, "once");
       if (input === "n") gate.respond(currentRequest.id, "deny");
       if (input === "a" && currentRequest.ruleKey !== undefined) {
         gate.respond(currentRequest.id, "always");
-        setEntries((prev) => [
-          ...prev,
-          {
-            kind: "notice",
-            text: `always allowing ${currentRequest.toolName} · ${currentRequest.ruleKey} this session`,
-          },
-        ]);
+        setView((s) =>
+          appendNotice(
+            s,
+            `always allowing ${currentRequest.toolName} · ${currentRequest.ruleKey} this session`,
+          ),
+        );
       }
       return;
     }
 
-    // slash-command palette navigation
+    // verbose Tool Results: `v` while the prompt is hidden mid-Turn,
+    // or /verbose any time — typing "v" into the input is never hijacked.
+    if (busy && input === "v") {
+      setVerboseTool((v) => !v);
+      return;
+    }
+
     if (suggestions.length > 0 && !busy) {
       if (key.upArrow) {
         setSelectedSuggestion((s) => (s - 1 + suggestions.length) % suggestions.length);
@@ -160,24 +144,21 @@ export function App({
     try {
       const loaded = await service.switchTo(target.meta.id);
       setBrowser(undefined);
-      setEntries([
-        {
-          kind: "notice",
-          text: `switched to session ${loaded.meta.id} (${loaded.messages.length} messages)`,
-        },
-        ...loaded.messages
-          .filter(
-            (m): m is Extract<ChatMessage, { role: "user" | "assistant" }> =>
-              m.role === "user" || m.role === "assistant",
-          )
-          .map((m): Entry => ({
-            kind: "message",
-            role: m.role,
-            content: m.content,
-          })),
-      ]);
+      const replayed: ViewEntry[] = loaded.messages.filter(
+        (m): m is Extract<ChatMessage, { role: "user" | "assistant" }> =>
+          m.role === "user" || m.role === "assistant",
+      ).map((m) => ({ kind: "message", role: m.role, content: m.content }));
+      setView(
+        replaceEntries(
+          appendNotice(
+            initialViewState(),
+            `switched to session ${loaded.meta.id} (${loaded.messages.length} messages)`,
+          ),
+          replayed,
+        ),
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setView(setError(initialViewState(), err instanceof Error ? err.message : String(err)));
     }
   };
 
@@ -189,17 +170,17 @@ export function App({
     const remaining = (await store.list()).filter((s) => s.meta.id !== target.meta.id);
     if (wasCurrent) {
       await service.newSession();
-      setEntries([
-        {
-          kind: "notice",
-          text: `deleted ${target.meta.id} (was current) — started ${service.id}`,
-        },
-      ]);
+      setView(
+        replaceEntries(
+          appendNotice(
+            initialViewState(),
+            `deleted ${target.meta.id} (was current) — started ${service.id}`,
+          ),
+          [],
+        ),
+      );
     } else {
-      setEntries((prev) => [
-        ...prev,
-        { kind: "notice", text: `deleted session ${target.meta.id}` },
-      ]);
+      setView((s) => appendNotice(s, `deleted session ${target.meta.id}`));
     }
     setBrowser({ sessions: remaining, selected: 0 });
   };
@@ -211,28 +192,29 @@ export function App({
         exit();
         return true;
       case "/help":
-        setEntries((prev) => [
-          ...prev,
-          {
-            kind: "notice",
-            text: "commands: /help, /new, /session, /exit · permissions: y once, n no, a always this session · flags: --yolo, --provider, --continue",
-          },
-        ]);
+        setView((s) =>
+          appendNotice(
+            s,
+            "commands: /help, /new, /session, /verbose, /exit · permissions: y once, n no, a always this session · v toggles tool output during a Turn · flags: --yolo, --provider, --continue",
+          ),
+        );
         return true;
       case "/new":
-        if (busy || pending.length > 0) return false;
+        if (busy || currentRequest) return false;
         void (async () => {
           await service.newSession();
-          setEntries([
-            { kind: "notice", text: `started new session ${service.id}` },
-          ]);
+          setView(replaceEntries(appendNotice(initialViewState(), `started new session ${service.id}`), []));
         })();
         return true;
       case "/session":
-        if (busy || pending.length > 0) return false;
+        if (busy || currentRequest) return false;
         void (async () => {
           setBrowser({ sessions: await store.list(), selected: 0 });
         })();
+        return true;
+      case "/verbose":
+        setVerboseTool((v) => !v);
+        setView((s) => appendNotice(s, `tool output ${verboseTool ? "hidden" : "shown"}`));
         return true;
       default:
         return false;
@@ -256,87 +238,67 @@ export function App({
       if (pick !== undefined) {
         setValue(`/${pick.name}`);
       } else {
-        setEntries((prev) => [
-          ...prev,
-          { kind: "notice", text: `unknown command "${trimmed}" — try /help` },
-        ]);
+        setView((s) => appendNotice(s, `unknown command "${trimmed}" — try /help`));
         setValue("");
       }
       return;
     }
 
-    if (busy || pending.length > 0) return;
+    if (busy || currentRequest) return;
     setValue("");
 
     const controller = new AbortController();
     abortRef.current = controller;
-    setBusy(true);
-    setError(undefined);
+    setView((s) => setBusy(s, true));
 
     void (async () => {
       try {
         for await (const event of service.send(trimmed, controller.signal)) {
-          apply(event, setEntries, setLiveText, setError);
+          setView((prev) => reduceChatEvent(prev, event));
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setView((s) => setError(s, err instanceof Error ? err.message : String(err)));
       } finally {
-        setLiveText("");
-        setBusy(false);
+        setView((s) => ({ ...setBusy(s, false), liveText: "" }));
       }
     })();
   };
 
-  const currentRequest = pending[0];
-
   return (
-    <Box flexDirection="column" paddingX={1} paddingBottom={1}>
-      <Static items={entries}>
-        {(entry, i) => (
-          <Box key={i} marginTop={i === 0 ? 1 : 0}>
-            {entry.kind === "message" ? (
-              entry.role === "user" ? (
-                <Text>
-                  <Text bold color="green">
-                    you{" "}
-                  </Text>
-                  {entry.content}
-                </Text>
-              ) : (
-                <Box flexDirection="column">
-                  <Text bold color="cyan">
-                    agent
-                  </Text>
-                  <MarkdownLite text={entry.content} />
-                </Box>
-              )
-            ) : entry.kind === "notice" ? (
-              <Text dimColor>ℹ {entry.text}</Text>
-            ) : (
-              <ToolLine entry={entry} />
-            )}
-          </Box>
-        )}
+    <Paper>
+      <SealHeader />
+
+      <Static items={view.entries}>
+        {(entry, i) => {
+          const startsTurn = entry.kind === "message" && entry.role === "user" && i > 0;
+          return (
+            <Box key={i} flexDirection="column" marginTop={entry.kind === "tool" ? 0 : SPACE.turnGap}>
+              {startsTurn && <Rule weight="light" />}
+              <EntryLine entry={entry} verbose={verboseTool} />
+            </Box>
+          );
+        }}
       </Static>
 
-      <Box marginTop={1}>
+      {view.entries.length === 0 && !busy && browser === undefined && (
+        <EmptyPaper />
+      )}
+
+      <Box marginTop={busy ? SPACE.turnGap : 1}>
         {busy ? (
-          liveText ? (
-            <Text>
-              <Text bold color="cyan">
-                agent{" "}
-              </Text>
-              {liveText}
-            </Text>
+          view.liveText ? (
+            <RoleBlock role="agent">
+              <MarkdownLite text={view.liveText} />
+            </RoleBlock>
           ) : (
-            <DotsSpinner label="thinking…" />
+            <InkDropSpinner label="thinking…" />
           )
         ) : null}
       </Box>
 
-      {error ? (
-        <Box marginBottom={1}>
-          <Text color="red">✗ {error}</Text>
+      {view.error ? (
+        <Box marginTop={1}>
+          <ErrorLine>{view.error}</ErrorLine>
         </Box>
       ) : null}
 
@@ -348,39 +310,17 @@ export function App({
         />
       ) : null}
 
-      {currentRequest ? (
-        <Box borderStyle="round" borderColor="yellow" paddingX={1}>
-          <Text>
-            <Text bold color="yellow">
-              permission{" "}
-            </Text>
-            allow <Text bold>{currentRequest.summary}</Text>?{" "}
-            <Text dimColor>
-              [y] yes / [n] no
-              {currentRequest.ruleKey !== undefined
-                ? ` / [a] always (${currentRequest.toolName} · ${currentRequest.ruleKey})`
-                : ""}
-            </Text>
-          </Text>
-        </Box>
-      ) : null}
+      {currentRequest ? <PermissionBlock request={currentRequest} /> : null}
 
       {!busy && !currentRequest && browser === undefined && (
         <>
           {suggestions.length > 0 && (
-            <Box flexDirection="column">
-              {suggestions.map((command, i) => (
-                <Text key={command.name}>
-                  <Text inverse={i === selectedSuggestion} color={i === selectedSuggestion ? "blue" : undefined}>
-                    {`/${command.name}`.padEnd(11)}
-                  </Text>
-                  <Text dimColor> {command.description}</Text>
-                </Text>
-              ))}
-              <Text dimColor> ↑/↓ select · tab complete · enter run</Text>
-            </Box>
+            <SuggestionList commands={suggestions} selected={selectedSuggestion} />
           )}
-          <Box borderStyle="round" borderColor="gray" paddingX={1}>
+          <Box marginLeft={SPACE.contentIndent}>
+            <Text {...INK_PROMPT}>
+              {MARK.prompt}{" "}
+            </Text>
             <TextInput
               value={value}
               onChange={setValue}
@@ -392,104 +332,43 @@ export function App({
       )}
 
       <Box marginTop={1}>
-        <Text dimColor>
+        <Rule weight="light" />
+      </Box>
+      <Box>
+        <Text {...{ dimColor: true }}>
           session {service.id} · {service.meta.provider}/{service.meta.model} · cwd{" "}
           {service.cwd}
           {allowedRules.length > 0 ? ` · always-allow: ${allowedRules.join(", ")}` : ""}
+          {verboseTool ? " · tool output shown" : ""}
         </Text>
       </Box>
-    </Box>
+    </Paper>
   );
 }
 
-function apply(
-  event: ChatEvent,
-  setEntries: React.Dispatch<React.SetStateAction<Entry[]>>,
-  setLiveText: React.Dispatch<React.SetStateAction<string>>,
-  setError: React.Dispatch<React.SetStateAction<string | undefined>>,
-): void {
-  switch (event.type) {
-    case "user-message":
-      setEntries((prev) => [
-        ...prev,
-        { kind: "message", role: "user", content: event.message.content },
-      ]);
-      break;
-    case "text-delta":
-      setLiveText((prev) => prev + event.delta);
-      break;
-    case "assistant-message": {
-      setLiveText("");
-      const hasTools = event.message.toolCalls && event.message.toolCalls.length > 0;
-      if (!hasTools || event.message.content.trim() !== "") {
-        setEntries((prev) => [
-          ...prev,
-          { kind: "message", role: "assistant", content: event.message.content },
-        ]);
-      }
-      break;
-    }
-    case "tool-start": {
-      let detail = "";
-      try {
-        const parsed = JSON.parse(event.argsJson || "{}") as Record<string, unknown>;
-        const primary =
-          parsed["path"] ?? parsed["command"] ?? parsed["pattern"] ?? undefined;
-        detail =
-          typeof primary === "string"
-            ? primary.length > 60
-              ? primary.slice(0, 57) + "…"
-              : primary
-            : event.toolName === "edit_file" && typeof parsed["oldText"] === "string"
-              ? `${String(parsed["path"] ?? "")}: "${parsed["oldText"].slice(0, 30)}…"`
-              : JSON.stringify(parsed).slice(0, 60);
-      } catch {
-        detail = event.argsJson;
-      }
-      setEntries((prev) => [
-        ...prev,
-        {
-          kind: "tool",
-          callId: event.callId,
-          toolName: event.toolName,
-          status: "running",
-          detail,
-        },
-      ]);
-      break;
-    }
-    case "tool-denied":
-      setEntries((prev) => updateTool(prev, event.callId, "denied", `denied (${event.reason})`));
-      break;
-    case "tool-result":
-      setEntries((prev) => updateTool(prev, event.callId, "done", summarize(event.output)));
-      break;
-    case "error":
-      setError(event.error instanceof Error ? event.error.message : String(event.error));
-      break;
+const INK_PROMPT = { bold: true as const };
+
+function EntryLine({
+  entry,
+  verbose,
+}: {
+  entry: ViewEntry;
+  verbose: boolean;
+}): React.ReactElement {
+  switch (entry.kind) {
+    case "message":
+      return entry.role === "user" ? (
+        <RoleBlock role="you">
+          <PaperText text={entry.content} />
+        </RoleBlock>
+      ) : (
+        <RoleBlock role="agent">
+          <MarkdownLite text={entry.content} />
+        </RoleBlock>
+      );
+    case "notice":
+      return <NoticeLine text={entry.text} />;
+    case "tool":
+      return <ToolStatusLine entry={entry} verbose={verbose} />;
   }
-}
-
-function updateTool(
-  entries: Entry[],
-  callId: string,
-  status: "done" | "denied",
-  extraDetail: string,
-): Entry[] {
-  const index = entries.findLastIndex((e) => e.kind === "tool" && e.callId === callId);
-  if (index === -1) return entries;
-  const updated = [...entries];
-  const entry = updated[index];
-  if (entry?.kind !== "tool") return entries;
-  updated[index] = {
-    ...entry,
-    status,
-    detail: `${entry.detail} · ${extraDetail}`,
-  };
-  return updated;
-}
-
-function summarize(output: string): string {
-  const firstLine = output.split("\n")[0] ?? "";
-  return firstLine.length > 80 ? firstLine.slice(0, 77) + "…" : firstLine;
 }

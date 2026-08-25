@@ -10,7 +10,7 @@ A terminal coding agent built from scratch — an LLM that can read, create, edi
 - **Two providers, one interface** — OpenAI and Anthropic behind a normalized streaming API (`src/providers/`)
 - **JSONL sessions** — full transcripts under `~/.my-agent/sessions/`, resumable with `--continue` / `--session <id>`
 - **Context manager** — token-budgeted requests that evict whole Turn Groups so Tool Results never separate from their Tool Calls
-- **Ink TUI** — streamed tokens, live tool activity, permission prompts, markdown-lite rendering
+- **Ink TUI** — streamed tokens, live tool activity, permission prompts, markdown-lite rendering, styled as 水墨 monochrome ink-wash: hierarchy through brush density, one vermilion seal accent
 
 ## Getting started
 

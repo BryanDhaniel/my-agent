@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { render, Text } from "ink";
 import React from "react";
-import { ChatService } from "./agent/chat.js";
+import { AgentHarness } from "./harness/harness.js";
 import { defaultRegistry } from "./agent/tools/index.js";
 import { USAGE, parseArgs } from "./cli-args.js";
 import { ConfigError, loadConfig } from "./config.js";
@@ -36,9 +36,14 @@ async function boot(): Promise<void> {
     permGate = askGate;
   }
 
-  const service = await ChatService.start(provider, store, registry, permGate, flags);
+  const harness = await AgentHarness.create(provider, {
+    store,
+    registry,
+    gate: permGate,
+    ...flags,
+  });
 
-  render(<App service={service} gate={uiGate} store={store} />);
+  render(<App service={harness as any} gate={uiGate} store={store} />);
 }
 
 boot().catch((err) => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import type { ChatEvent } from "../agent/chat.js";
+import type { AgentEvent } from "../harness/events.js";
 import {
   appendNotice,
   initialViewState,
@@ -11,7 +11,7 @@ import {
   type ChatViewState,
 } from "./view.js";
 
-function run(state: ChatViewState, ...events: ChatEvent[]): ChatViewState {
+function run(state: ChatViewState, ...events: AgentEvent[]): ChatViewState {
   return events.reduce(reduceChatEvent, state);
 }
 

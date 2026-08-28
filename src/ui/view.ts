@@ -1,8 +1,8 @@
-import type { ChatEvent } from "../agent/chat.js";
+import type { AgentEvent } from "../harness/events.js";
 
 /**
  * Pure view state for the conversation surface. Everything the screen shows
- * about a Session is derived here from ChatEvents — no Ink, no React, no
+ * about a Session is derived here from AgentEvents — no Ink, no React, no
  * side effects. The interface is: state in, new state out.
  */
 
@@ -43,7 +43,7 @@ export function initialViewState(): ChatViewState {
 
 export function reduceChatEvent(
   state: ChatViewState,
-  event: ChatEvent,
+  event: AgentEvent,
 ): ChatViewState {
   switch (event.type) {
     case "user-message":
@@ -114,6 +114,9 @@ export function reduceChatEvent(
         error:
           event.error instanceof Error ? event.error.message : String(event.error),
       };
+
+    default:
+      return state;
   }
 }
 

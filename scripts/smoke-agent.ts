@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ChatService } from "../src/agent/chat.js";
+import { AgentHarness } from "../src/harness/harness.js";
 import { defaultRegistry } from "../src/agent/tools/index.js";
 import { loadConfig } from "../src/config.js";
 import { AutoApproveGate } from "../src/permissions/gate.js";
@@ -19,13 +19,12 @@ async function main(): Promise<void> {
   console.log(`workdir: ${workdir}`);
 
   const provider = new OpenAIProvider(config.apiKey, config.model);
-  const service = await ChatService.start(
-    provider,
-    new SessionStore(path.join(workdir, "sessions")),
-    defaultRegistry(),
-    new AutoApproveGate(),
-    { cwd: workdir },
-  );
+  const harness = await AgentHarness.create(provider, {
+    store: new SessionStore(path.join(workdir, "sessions")),
+    registry: defaultRegistry(),
+    gate: new AutoApproveGate(),
+    cwd: workdir,
+  });
 
   const prompt = [
     "Use your tools:",
@@ -36,7 +35,7 @@ async function main(): Promise<void> {
   ].join(" ");
   console.log(`you: ${prompt}\n`);
 
-  for await (const event of service.send(prompt)) {
+  for await (const event of harness.run(prompt)) {
     switch (event.type) {
       case "text-delta":
         process.stdout.write(event.delta);

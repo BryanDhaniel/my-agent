@@ -1,7 +1,7 @@
 import { Box, Static, Text, useApp, useInput } from "ink";
 import React, { useEffect, useRef, useState } from "react";
 import TextInput from "ink-text-input";
-import type { ChatService } from "../agent/chat.js";
+import type { AgentHarness } from "../harness/harness.js";
 import type { PermissionRequest, UiGate } from "../permissions/gate.js";
 import type { LoadedSession, SessionStore } from "../session/store.js";
 import type { ChatMessage } from "../agent/types.js";
@@ -44,7 +44,7 @@ export function App({
   gate,
   store,
 }: {
-  service: ChatService;
+  service: AgentHarness;
   gate: UiGate;
   store: SessionStore;
 }): React.ReactElement {
@@ -253,8 +253,8 @@ export function App({
 
     void (async () => {
       try {
-        for await (const event of service.send(trimmed, controller.signal)) {
-          setView((prev) => reduceChatEvent(prev, event));
+        for await (const event of service.run(trimmed, controller.signal)) {
+          setView((prev) => reduceChatEvent(prev, event as any));
         }
       } catch (err) {
         setView((s) => setError(s, err instanceof Error ? err.message : String(err)));

@@ -1,0 +1,167 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { z } from "zod";
+import { AgentHarness } from "./harness.js";
+import { AgentRuntime } from "./runtime.js";
+import { SessionStore } from "../session/store.js";
+import { ToolRegistry } from "../agent/registry.js";
+import { AutoApproveGate, DenyAllGate } from "../permissions/gate.js";
+import type { Provider, StreamEvent } from "../providers/provider.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+class MockProvider implements Provider {
+  readonly name = "mock";
+  readonly model = "mock-model";
+  responses: Array<StreamEvent[]> = [];
+
+  async *stream(): AsyncGenerator<StreamEvent> {
+    const events = this.responses.shift() ?? [
+      {
+        type: "done",
+        message: { role: "assistant", content: "Hello from mock!" },
+      },
+    ];
+    for (const ev of events) {
+      yield ev;
+    }
+  }
+}
+
+describe("AgentHarness & AgentRuntime", () => {
+  let tmpDir: string;
+  let store: SessionStore;
+  let provider: MockProvider;
+  let registry: ToolRegistry;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "harness-test-"));
+    store = new SessionStore(tmpDir);
+    provider = new MockProvider();
+    registry = new ToolRegistry();
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("executes a basic prompt and updates run state to completed", async () => {
+    const harness = await AgentHarness.create(provider, {
+      store,
+      registry,
+      gate: new AutoApproveGate(),
+    });
+
+    expect(harness.state.status).toBe("idle");
+    expect(harness.state.turns).toBe(0);
+
+    const events = [];
+    for await (const event of harness.run("Hi there")) {
+      events.push(event);
+    }
+
+    expect(harness.state.status).toBe("completed");
+    expect(harness.state.turns).toBe(1);
+
+    const types = events.map((e) => e.type);
+    expect(types).toContain("agent-started");
+    expect(types).toContain("user-message");
+    expect(types).toContain("llm-requested");
+    expect(types).toContain("llm-completed");
+    expect(types).toContain("assistant-message");
+    expect(types).toContain("agent-completed");
+  });
+
+  it("handles tool calls and records results", async () => {
+    registry.register({
+      name: "echo",
+      description: "Echo input",
+      mutating: false,
+      schema: z.object({ text: z.string() }),
+      execute: async (input: { text: string }) => ({ output: `Echo: ${input.text}` }),
+    });
+
+    provider.responses = [
+      [
+        {
+          type: "done",
+          message: {
+            role: "assistant",
+            content: "Using tool",
+            toolCalls: [{ id: "call_1", name: "echo", arguments: '{"text":"hello"}' }],
+          },
+        },
+      ],
+      [
+        {
+          type: "done",
+          message: { role: "assistant", content: "Done!" },
+        },
+      ],
+    ];
+
+    const harness = await AgentHarness.create(provider, {
+      store,
+      registry,
+      gate: new AutoApproveGate(),
+    });
+
+    const events = [];
+    for await (const event of harness.run("Test tool")) {
+      events.push(event);
+    }
+
+    expect(harness.state.status).toBe("completed");
+    expect(harness.state.turns).toBe(2);
+
+    const toolResults = events.filter((e) => e.type === "tool-result");
+    expect(toolResults.length).toBe(1);
+    const firstResult = toolResults[0];
+    if (firstResult && firstResult.type === "tool-result") {
+      expect(firstResult.output).toBe("Echo: hello");
+    }
+  });
+
+  it("wraps DenyAllGate so awaiting-permission is tracked properly", async () => {
+    registry.register({
+      name: "danger",
+      description: "Mutating action",
+      mutating: true,
+      schema: z.object({}),
+      execute: async () => ({ output: "ok" }),
+    });
+
+    provider.responses = [
+      [
+        {
+          type: "done",
+          message: {
+            role: "assistant",
+            content: "Calling danger",
+            toolCalls: [{ id: "call_1", name: "danger", arguments: "{}" }],
+          },
+        },
+      ],
+      [
+        {
+          type: "done",
+          message: { role: "assistant", content: "Understood." },
+        },
+      ],
+    ];
+
+    const harness = await AgentHarness.create(provider, {
+      store,
+      registry,
+      gate: new DenyAllGate(),
+    });
+
+    const events = [];
+    for await (const event of harness.run("Do danger")) {
+      events.push(event);
+    }
+
+    const denied = events.filter((e) => e.type === "tool-denied");
+    expect(denied.length).toBe(1);
+  });
+});

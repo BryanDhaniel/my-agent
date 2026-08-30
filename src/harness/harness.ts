@@ -17,6 +17,7 @@ import {
 } from "./state.js";
 import type { AgentEvent } from "./events.js";
 import { AgentRuntime } from "./runtime.js";
+import { McpManager, type McpConfig } from "../mcp/index.js";
 
 export function buildSystemPrompt(cwd: string, topLevel: string): string {
   return [
@@ -37,6 +38,8 @@ export interface AgentHarnessOptions {
   registry?: ToolRegistry;
   context?: ContextManager;
   store?: SessionStore;
+  /** MCP server configuration. When set, MCP servers are connected on create(). */
+  mcpConfig?: McpConfig;
 }
 
 export class AgentHarness {
@@ -48,6 +51,7 @@ export class AgentHarness {
   #history: ChatMessage[];
   #meta: SessionMeta;
   #state: RunState = INITIAL_RUN_STATE;
+  #mcpManager?: McpManager;
   readonly cwd: string;
 
   private constructor(
@@ -84,6 +88,13 @@ export class AgentHarness {
     const context = opts.context ?? new ContextManager();
     const cwd = opts.cwd ?? process.cwd();
 
+    // Connect to MCP servers and register their tools.
+    let mcpManager: McpManager | undefined;
+    if (opts.mcpConfig) {
+      mcpManager = await McpManager.connectAll(opts.mcpConfig);
+      registry.registerAll([...mcpManager.tools]);
+    }
+
     let loaded: LoadedSession | undefined;
     if (opts.sessionId) {
       loaded = await store.load(opts.sessionId);
@@ -92,8 +103,9 @@ export class AgentHarness {
       loaded = await store.latest();
     }
 
+    let harness: AgentHarness;
     if (loaded) {
-      return new AgentHarness(
+      harness = new AgentHarness(
         provider,
         store,
         registry,
@@ -104,27 +116,30 @@ export class AgentHarness {
         context,
         await topLevelListing(cwd),
       );
+    } else {
+      const meta: SessionMeta = {
+        id: SessionStore.newId(),
+        provider: provider.name,
+        model: provider.model,
+        createdAt: new Date().toISOString(),
+      };
+      await store.create(meta);
+
+      harness = new AgentHarness(
+        provider,
+        store,
+        registry,
+        gate,
+        meta,
+        [],
+        cwd,
+        context,
+        await topLevelListing(cwd),
+      );
     }
 
-    const meta: SessionMeta = {
-      id: SessionStore.newId(),
-      provider: provider.name,
-      model: provider.model,
-      createdAt: new Date().toISOString(),
-    };
-    await store.create(meta);
-
-    return new AgentHarness(
-      provider,
-      store,
-      registry,
-      gate,
-      meta,
-      [],
-      cwd,
-      context,
-      await topLevelListing(cwd),
-    );
+    harness.#mcpManager = mcpManager;
+    return harness;
   }
 
   get id(): string {
@@ -145,6 +160,16 @@ export class AgentHarness {
 
   get gate(): PermissionGate {
     return this.#gate;
+  }
+
+  /** Status of each configured MCP server (empty when MCP is not configured). */
+  get mcpStatuses(): readonly import("../mcp/index.js").McpServerStatus[] {
+    return this.#mcpManager?.statuses ?? [];
+  }
+
+  /** Shut down MCP clients and release resources. */
+  async close(): Promise<void> {
+    await this.#mcpManager?.close();
   }
 
   async newSession(): Promise<void> {

@@ -10,6 +10,7 @@ import type { PermissionGate, UiGate } from "./permissions/gate.js";
 import { AnthropicProvider } from "./providers/anthropic.js";
 import { OpenAIProvider } from "./providers/openai.js";
 import { SessionStore } from "./session/store.js";
+import { loadMcpConfig } from "./mcp/index.js";
 import { App } from "./ui/app.js";
 
 async function boot(): Promise<void> {
@@ -36,11 +37,37 @@ async function boot(): Promise<void> {
     permGate = askGate;
   }
 
+  const mcpConfig = await loadMcpConfig(process.cwd());
+
   const harness = await AgentHarness.create(provider, {
     store,
     registry,
     gate: permGate,
+    mcpConfig,
     ...flags,
+  });
+
+  // Log MCP server statuses.
+  for (const status of harness.mcpStatuses) {
+    if (status.status === "connected") {
+      console.error(`mcp: ${status.name} connected (${status.toolCount} tools)`);
+    } else {
+      console.error(`mcp: ${status.name} failed — ${status.error}`);
+    }
+  }
+
+  // Clean up MCP clients on exit.
+  const cleanup = () => {
+    void harness.close();
+  };
+  process.on("exit", cleanup);
+  process.on("SIGINT", () => {
+    cleanup();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    cleanup();
+    process.exit(0);
   });
 
   render(<App service={harness as any} gate={uiGate} store={store} />);

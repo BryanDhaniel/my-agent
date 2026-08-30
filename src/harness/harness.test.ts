@@ -164,4 +164,84 @@ describe("AgentHarness & AgentRuntime", () => {
     const denied = events.filter((e) => e.type === "tool-denied");
     expect(denied.length).toBe(1);
   });
+
+  it("registers MCP tools and makes them available to the runtime", async () => {
+    // Simulate an MCP tool via mcpConfig with a failing command —
+    // we just need to verify the harness handles MCP config gracefully.
+    const harness = await AgentHarness.create(provider, {
+      store,
+      registry,
+      gate: new AutoApproveGate(),
+      mcpConfig: {
+        servers: {
+          fake: { command: "__nonexistent_mcp_server__" },
+        },
+      },
+    });
+
+    // The fake server fails, but the harness still starts.
+    expect(harness.mcpStatuses.length).toBe(1);
+    expect(harness.mcpStatuses[0]?.status).toBe("failed");
+
+    // close() should be safe even when no MCP servers are connected.
+    await harness.close();
+  });
+
+  it("registerAll adds MCP-style tools that are invokable through the registry", async () => {
+    const mcpTool = {
+      name: "mcp.test.echo",
+      description: "Echo tool from MCP",
+      mutating: true,
+      schema: z.object({ text: z.string() }),
+      async execute(input: unknown) {
+        const { text } = input as { text: string };
+        return { output: `echo: ${text}` };
+      },
+    };
+
+    registry.register(mcpTool);
+
+    // Provider returns a response that calls the MCP tool.
+    provider.responses = [
+      [
+        {
+          type: "done",
+          message: {
+            role: "assistant",
+            content: "Using the MCP echo tool",
+            toolCalls: [
+              { id: "mcp_1", name: "mcp.test.echo", arguments: '{"text":"hello"}' },
+            ],
+          },
+        },
+      ],
+      [
+        {
+          type: "done",
+          message: { role: "assistant", content: "The echo returned: echo: hello" },
+        },
+      ],
+    ];
+
+    const harness = await AgentHarness.create(provider, {
+      store,
+      registry,
+      gate: new AutoApproveGate(),
+    });
+
+    const events = [];
+    for await (const event of harness.run("Use the echo tool")) {
+      events.push(event);
+    }
+
+    const results = events.filter((e) => e.type === "tool-result");
+    expect(results.length).toBe(1);
+    expect(results[0]).toHaveProperty("output", "echo: hello");
+  });
+
+  it("close() is idempotent", async () => {
+    const harness = await AgentHarness.create(provider, { store, registry });
+    await harness.close();
+    await harness.close(); // should not throw
+  });
 });

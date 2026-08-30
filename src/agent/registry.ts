@@ -29,6 +29,13 @@ export class ToolRegistry {
     this.#tools.set(tool.name, tool);
   }
 
+  /** Register multiple tools at once. */
+  registerAll(tools: AnyTool[]): void {
+    for (const tool of tools) {
+      this.register(tool);
+    }
+  }
+
   list(): AnyTool[] {
     return [...this.#tools.values()];
   }

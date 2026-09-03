@@ -11,6 +11,8 @@ import { AnthropicProvider } from "./providers/anthropic.js";
 import { OpenAIProvider } from "./providers/openai.js";
 import { SessionStore } from "./session/store.js";
 import { loadMcpConfig } from "./mcp/index.js";
+import { loadAllSkills, SkillRegistry } from "./skills/index.js";
+import { join } from "node:path";
 import { App } from "./ui/app.js";
 
 async function boot(): Promise<void> {
@@ -39,11 +41,27 @@ async function boot(): Promise<void> {
 
   const mcpConfig = await loadMcpConfig(process.cwd());
 
+  // Discover skills from .agents/skills/ and skills/ directories.
+  const skillRegistry = new SkillRegistry();
+  const cwd = process.cwd();
+  const skillSources = [
+    join(cwd, ".agents", "skills"),
+    join(cwd, "skills"),
+  ];
+  for (const dir of skillSources) {
+    const loaded = await loadAllSkills(dir);
+    skillRegistry.registerAll(loaded);
+  }
+  if (skillRegistry.size > 0) {
+    console.error(`skills: ${skillRegistry.size} loaded`);
+  }
+
   const harness = await AgentHarness.create(provider, {
     store,
     registry,
     gate: permGate,
     mcpConfig,
+    skills: skillRegistry,
     ...flags,
   });
 

@@ -29,13 +29,98 @@ npm run dev -- --continue             # resume most recent session
 npm run dev -- --yolo                 # auto-approve mutating tools
 ```
 
-In the TUI: `/help` shows commands, `/exit` quits.
+In the TUI: `/help` shows commands, `/exit` quits, `/skills` lists available skills.
+
+## Skills
+
+Skills define *how* the agent should approach a class of tasks. They are behavioral instructions, not executable tools.
+
+```
+Agent
+├── Skills → behavioral/instructional capability (debugging, TDD, code review …)
+└── Tools  → execution capability (read_file, write_file, bash, MCP tools …)
+```
+
+### Skills vs Tools vs MCP
+
+| Concern | What it provides | Example |
+|---------|-----------------|---------|
+| **Tools** | What the agent *can do* | `read_file`, `write_file`, `run_bash` |
+| **MCP** | External tools from MCP servers | `mcp.github.search_code` |
+| **Skills** | How the agent *should think* | TDD, code review, research |
+
+Skills never bypass the permission gate. If a skill instructs the agent to use `run_bash`, the permission check still applies.
+
+### SKILL.md format
+
+Skills follow the [mattpocock/skills](https://github.com/mattpocock/skills) convention:
+
+```
+skills/<skill-name>/SKILL.md
+```
+
+A `SKILL.md` file has YAML frontmatter and a Markdown body:
+
+```markdown
+---
+name: tdd
+description: Test-driven development. Red-green-refactor.
+---
+
+# Test-Driven Development
+
+Write the test first. Watch it fail. Make it pass. Refactor.
+…
+```
+
+**Frontmatter fields:**
+- `name` (required) — skill identifier
+- `description` (required) — one-line summary (shown to the model for discovery)
+- `disable-model-invocation: true` — makes the skill user-invoked only (default: model can select it)
+- `argument-hint` — TUI hint for skills that accept an argument
+
+### User-invoked vs model-invoked skills
+
+**User-invoked** (`disable-model-invocation: true`): explicitly triggered via a slash command.
+
+```
+/implement fix the parser
+/grill-me about the migration plan
+/tdd
+```
+
+**Model-invoked** (no `disable-model-invocation`): the model sees lightweight metadata in the system prompt and can load the skill when relevant.
+
+### CLI usage
+
+```
+/skills              list all available skills
+/tdd                 invoke the tdd skill
+/implement fix auth  invoke implement with context
+```
+
+### Skill directories
+
+Skills are discovered from two directories (in order):
+
+1. `.agents/skills/` — project-specific or installed skills
+2. `skills/` — local skills
+
+### External skills
+
+Install external skill repositories (e.g. [mattpocock/skills](https://github.com/mattpocock/skills)) into `.agents/skills/`:
+
+```bash
+npx skills@latest add mattpocock/skills
+```
+
+Or manually copy skill directories into `.agents/skills/`. The agent will discover them on startup.
 
 ## Verification
 
 ```bash
 npm run typecheck    # tsc --noEmit
-npm test             # vitest: loop wiring, tools, gates, sessions, context, provider mappings
+npm test             # vitest: loop wiring, tools, gates, sessions, context, provider mappings, skills
 npm run smoke:openai # headless streamed completion
 npm run smoke:agent  # headless multi-tool agent task with disk verification
 ```
@@ -44,13 +129,29 @@ npm run smoke:agent  # headless multi-tool agent task with disk verification
 
 ```
 src/
-├── index.tsx            CLI entry: flags → config → providers → UI
+├── index.tsx            CLI entry: flags → config → providers → skills → UI
 ├── agent/
 │   ├── chat.ts          ChatService: history + the Agent Loop + tool execution
 │   ├── registry.ts      ToolRegistry: zod schemas → JSON Schema, validation
 │   ├── tool.ts          Tool contract (+ ruleKey for allowlisting)
 │   ├── types.ts         ChatMessage / AssistantMessage / ToolCallRequest
 │   └── tools/           the six tools + shared tree walker + glob matcher
+├── harness/
+│   ├── harness.ts       AgentHarness: lifecycle, sessions, skills, MCP
+│   ├── runtime.ts       AgentRuntime: the agent/tool loop
+│   ├── events.ts        Streaming event types
+│   └── state.ts         Run state machine
+├── skills/
+│   ├── loader.ts        SKILL.md parser + directory discovery
+│   ├── registry.ts      SkillRegistry: metadata-first skill namespace
+│   ├── resolver.ts      SkillResolver: name resolution + depth guard
+│   └── index.ts         Barrel export
+├── mcp/
+│   ├── config.ts        MCP server configuration + .my-agent.json loader
+│   ├── client.ts        McpClient: SDK wrapper for stdio transport
+│   ├── adapter.ts       MCP tool → ToolDefinition adapter
+│   ├── manager.ts       McpManager: multi-server lifecycle
+│   └── index.ts         Barrel export
 ├── providers/
 │   ├── provider.ts      Provider seam: stream(messages) → StreamEvent
 │   ├── openai.ts        chat.completions streaming + tool-call accumulation
@@ -62,3 +163,4 @@ src/
 ```
 
 Domain vocabulary lives in [CONTEXT.md](./CONTEXT.md); decisions in [docs/adr/](./docs/adr/).
+

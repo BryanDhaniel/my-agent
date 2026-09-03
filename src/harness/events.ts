@@ -15,4 +15,5 @@ export type AgentEvent =
   | { type: "llm-requested"; turn: number }
   | { type: "llm-completed"; turn: number }
   | { type: "tool-requested"; callId: string; toolName: string }
-  | { type: "tool-failed"; callId: string; toolName: string; error: string };
+  | { type: "tool-failed"; callId: string; toolName: string; error: string }
+  | { type: "skill-activated"; name: string };

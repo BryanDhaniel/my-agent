@@ -27,4 +27,16 @@ describe("suggestCommands", () => {
   it("returns nothing for unknown prefixes", () => {
     assert.deepEqual(suggestCommands("/zzz"), []);
   });
+
+  it("includes extra skill commands in suggestions", () => {
+    const extra = [{ name: "tdd", description: "Test-driven dev." }];
+    const names = suggestCommands("/t", extra).map((c) => c.name);
+    assert.ok(names.includes("tdd"));
+  });
+
+  it("matches hyphenated skill names", () => {
+    const extra = [{ name: "grill-me", description: "Grill." }];
+    const names = suggestCommands("/grill-", extra).map((c) => c.name);
+    assert.deepEqual(names, ["grill-me"]);
+  });
 });

@@ -18,16 +18,28 @@ import {
 import type { AgentEvent } from "./events.js";
 import { AgentRuntime } from "./runtime.js";
 import { McpManager, type McpConfig } from "../mcp/index.js";
+import { SkillRegistry, SkillResolver, SkillResolverError } from "../skills/index.js";
+import type { SlashCommand } from "../ui/commands.js";
 
-export function buildSystemPrompt(cwd: string, topLevel: string): string {
-  return [
+export function buildSystemPrompt(
+  cwd: string,
+  topLevel: string,
+  skillCatalog?: string,
+): string {
+  const parts = [
     "You are my-agent, a terminal coding agent working in the user's project directory.",
     "You can read, create, edit, search files and run shell commands via your tools.",
     "Use tools whenever they help; prefer relative paths; be concise and direct.",
     "",
     `Project root: ${cwd}`,
     `Top-level entries:\n${topLevel}`,
-  ].join("\n");
+  ];
+
+  if (skillCatalog) {
+    parts.push("", skillCatalog);
+  }
+
+  return parts.join("\n");
 }
 
 export interface AgentHarnessOptions {
@@ -40,6 +52,8 @@ export interface AgentHarnessOptions {
   store?: SessionStore;
   /** MCP server configuration. When set, MCP servers are connected on create(). */
   mcpConfig?: McpConfig;
+  /** Pre-built SkillRegistry. When set, skills are available for invocation. */
+  skills?: SkillRegistry;
 }
 
 export class AgentHarness {
@@ -52,6 +66,8 @@ export class AgentHarness {
   #meta: SessionMeta;
   #state: RunState = INITIAL_RUN_STATE;
   #mcpManager?: McpManager;
+  #skills: SkillRegistry;
+  #skillResolver: SkillResolver;
   readonly cwd: string;
 
   private constructor(
@@ -64,14 +80,24 @@ export class AgentHarness {
     cwd: string,
     context: ContextManager,
     topLevel: string,
+    skills: SkillRegistry,
   ) {
     this.#provider = provider;
     this.#store = store;
     this.#registry = registry;
     this.#context = context;
     this.#meta = meta;
+    this.#skills = skills;
+    this.#skillResolver = new SkillResolver(skills);
     this.cwd = cwd;
-    this.#history = [system(buildSystemPrompt(cwd, topLevel)), ...history];
+
+    // Build skill catalog for model-invoked skills.
+    const modelSkills = skills.listModelInvoked();
+    const skillCatalog = modelSkills.length > 0
+      ? buildSkillCatalog(modelSkills)
+      : undefined;
+
+    this.#history = [system(buildSystemPrompt(cwd, topLevel, skillCatalog)), ...history];
 
     this.#gate = new StatusTrackingGate(gate, (awaiting) => {
       this.#state = setAwaitingPermission(this.#state, awaiting);
@@ -87,6 +113,7 @@ export class AgentHarness {
     const gate = opts.gate ?? new DenyAllGate();
     const context = opts.context ?? new ContextManager();
     const cwd = opts.cwd ?? process.cwd();
+    const skills = opts.skills ?? new SkillRegistry();
 
     // Connect to MCP servers and register their tools.
     let mcpManager: McpManager | undefined;
@@ -115,6 +142,7 @@ export class AgentHarness {
         cwd,
         context,
         await topLevelListing(cwd),
+        skills,
       );
     } else {
       const meta: SessionMeta = {
@@ -135,6 +163,7 @@ export class AgentHarness {
         cwd,
         context,
         await topLevelListing(cwd),
+        skills,
       );
     }
 
@@ -172,6 +201,19 @@ export class AgentHarness {
     await this.#mcpManager?.close();
   }
 
+  /** Skill registry (for TUI listing). */
+  get skills(): SkillRegistry {
+    return this.#skills;
+  }
+
+  /** Skill names formatted as SlashCommands for TUI autocomplete. */
+  get skillCommands(): SlashCommand[] {
+    return this.#skills.listUserInvoked().map((s) => ({
+      name: s.name,
+      description: s.description,
+    }));
+  }
+
   async newSession(): Promise<void> {
     const meta: SessionMeta = {
       id: SessionStore.newId(),
@@ -200,9 +242,35 @@ export class AgentHarness {
     this.#state = startRun(this.#state);
     yield { type: "agent-started", sessionId: this.#meta.id };
 
+    // Skill interception: if the text starts with /skillname, resolve the
+    // skill and inject its instructions as a system message.
+    let effectiveText = text;
+    const skillMatch = /^\/([a-zA-Z][a-zA-Z0-9-]*)(?:\s|$)/.exec(text);
+    if (skillMatch) {
+      const skillName = skillMatch[1]!;
+      try {
+        const skill = this.#skillResolver.resolve(skillName);
+        // Inject skill instructions as a system message so the model
+        // sees them. ContextManager preserves system messages during trimming.
+        const skillSystem: ChatMessage = {
+          role: "system",
+          content: `[Skill: ${skill.name}]\n\n${skill.instructions}`,
+        };
+        this.#history.push(skillSystem);
+        yield { type: "skill-activated", name: skill.name } as AgentEvent;
+
+        // Strip the /skillname prefix — pass remaining text (or skill description) to the model.
+        const remainder = text.slice(skillMatch[0].length).trim();
+        effectiveText = remainder || `Use the ${skill.name} skill: ${skill.description}`;
+      } catch (err) {
+        if (!(err instanceof SkillResolverError)) throw err;
+        // Not a skill — fall through to normal processing.
+      }
+    }
+
     const userMessage: Extract<ChatMessage, { role: "user" }> = {
       role: "user",
-      content: text,
+      content: effectiveText,
     };
 
     const persistErr = await this.#persistOrError(userMessage);
@@ -315,4 +383,12 @@ async function topLevelListing(cwd: string): Promise<string> {
     .slice(0, 40)
     .map((e) => (e.isDirectory() ? `${e.name}/` : e.name));
   return names.length > 0 ? names.join("\n") : "(empty directory)";
+}
+
+function buildSkillCatalog(skills: import("../skills/index.js").SkillMetadata[]): string {
+  const lines = skills.map((s) => `- ${s.name}: ${s.description}`);
+  return [
+    "Available skills (behavioral guides you can reference when relevant):",
+    ...lines,
+  ].join("\n");
 }

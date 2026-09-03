@@ -9,6 +9,8 @@ import type { Provider, StreamEvent } from "../providers/provider.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { SkillRegistry } from "../skills/index.js";
+import type { Skill } from "../skills/index.js";
 
 class MockProvider implements Provider {
   readonly name = "mock";
@@ -243,5 +245,92 @@ describe("AgentHarness & AgentRuntime", () => {
     const harness = await AgentHarness.create(provider, { store, registry });
     await harness.close();
     await harness.close(); // should not throw
+  });
+
+  it("emits skill-activated when user invokes a skill via /name", async () => {
+    const skills = new SkillRegistry();
+    const testSkill: Skill = {
+      name: "test-skill",
+      description: "A test skill.",
+      instructions: "Greet the user warmly.",
+      invocation: "user",
+      source: "/skills/test",
+    };
+    skills.register(testSkill);
+
+    provider.responses = [
+      [
+        {
+          type: "done",
+          message: { role: "assistant", content: "Hello! I'm using the test skill." },
+        },
+      ],
+    ];
+
+    const harness = await AgentHarness.create(provider, {
+      store,
+      registry,
+      gate: new AutoApproveGate(),
+      skills,
+    });
+
+    const events = [];
+    for await (const event of harness.run("/test-skill do the thing")) {
+      events.push(event);
+    }
+
+    const activated = events.filter((e) => e.type === "skill-activated");
+    expect(activated.length).toBe(1);
+    expect(activated[0]).toHaveProperty("name", "test-skill");
+  });
+
+  it("skillCommands returns user-invoked skills", async () => {
+    const skills = new SkillRegistry();
+    skills.register({
+      name: "impl",
+      description: "Implement things.",
+      instructions: "...",
+      invocation: "user",
+      source: "/s/impl",
+    });
+    skills.register({
+      name: "auto-review",
+      description: "Review code.",
+      instructions: "...",
+      invocation: "model",
+      source: "/s/review",
+    });
+
+    const harness = await AgentHarness.create(provider, {
+      store,
+      registry,
+      skills,
+    });
+
+    const cmds = harness.skillCommands;
+    expect(cmds.length).toBe(1);
+    expect(cmds[0]?.name).toBe("impl");
+  });
+
+  it("model-invoked skills appear in system prompt", async () => {
+    const skills = new SkillRegistry();
+    skills.register({
+      name: "tdd",
+      description: "Test-driven development.",
+      instructions: "Red green refactor.",
+      invocation: "model",
+      source: "/s/tdd",
+    });
+
+    const harness = await AgentHarness.create(provider, {
+      store,
+      registry,
+      skills,
+    });
+
+    const systemMsg = harness.messages.find((m) => m.role === "system");
+    expect(systemMsg?.content).toContain("tdd");
+    expect(systemMsg?.content).toContain("Test-driven development");
+    expect(systemMsg?.content).toContain("Available skills");
   });
 });

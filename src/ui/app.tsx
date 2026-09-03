@@ -58,7 +58,7 @@ export function App({
   const [verboseTool, setVerboseTool] = useState(false);
   const abortRef = useRef<AbortController | undefined>(undefined);
 
-  const suggestions = suggestCommands(value);
+  const suggestions = suggestCommands(value, service.skillCommands);
   const busy = view.busy;
   const currentRequest = pending[0];
 
@@ -216,6 +216,18 @@ export function App({
         setVerboseTool((v) => !v);
         setView((s) => appendNotice(s, `tool output ${verboseTool ? "hidden" : "shown"}`));
         return true;
+      case "/skills": {
+        const all = service.skills.list();
+        if (all.length === 0) {
+          setView((s) => appendNotice(s, "No skills available."));
+        } else {
+          const lines = all
+            .map((s) => `  /${s.name}  ${s.invocation === "user" ? "[user]" : "[model]"}  ${s.description}`)
+            .join("\n");
+          setView((s) => appendNotice(s, `Available skills (${all.length}):\n${lines}`));
+        }
+        return true;
+      }
       default:
         return false;
     }
@@ -232,16 +244,26 @@ export function App({
     }
 
     // still typing a bare "/xyz": complete highlighted suggestion or reject
-    if (/^\/[a-zA-Z]*$/.test(trimmed)) {
+    if (/^\/[a-zA-Z][a-zA-Z0-9-]*$/.test(trimmed)) {
       const pick =
         suggestions.length > 0 ? suggestions[Math.min(selectedSuggestion, suggestions.length - 1)] : undefined;
       if (pick !== undefined) {
-        setValue(`/${pick.name}`);
-      } else {
-        setView((s) => appendNotice(s, `unknown command "${trimmed}" — try /help`));
+        // If the pick is a skill, invoke it immediately.
+        if (service.skills.has(pick.name)) {
+          setValue("");
+          // Fall through to run() below.
+        } else {
+          setValue(`/${pick.name}`);
+          return;
+        }
+      } else if (service.skills.has(trimmed.slice(1))) {
+        // Direct skill name match — let it fall through to run().
         setValue("");
+      } else {
+        setView((s) => appendNotice(s, `unknown command "${trimmed}" — try /help or /skills`));
+        setValue("");
+        return;
       }
-      return;
     }
 
     if (busy || currentRequest) return;

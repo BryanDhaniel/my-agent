@@ -2,7 +2,7 @@ import { Box, Text } from "ink";
 import React from "react";
 import type { LoadedSession, SessionStore } from "../session/store.js";
 import { Rule } from "./ink.js";
-import { INK, MARK, SPACE, label } from "./theme.js";
+import { INK, MARK, SPACE } from "./theme.js";
 
 function timeAgo(iso: string): string {
   const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -28,13 +28,13 @@ export function SessionBrowser({
       <Rule weight="heavy" />
       <Box marginLeft={SPACE.contentIndent}>
         <Text>
-          <Text {...INK.strong}>{label("sessions")} </Text>
-          <Text {...INK.ghost}>↑/↓ select · s switch · d delete · esc close</Text>
+          <Text {...INK.strong}>Sessions </Text>
+          <Text {...INK.dim}>↑↓ select · s switch · d delete · esc close</Text>
         </Text>
       </Box>
       {sessions.length === 0 ? (
         <Box marginLeft={SPACE.contentIndent}>
-          <Text {...INK.ghost}>no sessions yet</Text>
+          <Text {...INK.dim}>no sessions yet</Text>
         </Box>
       ) : (
         sessions.map((session, i) => {
@@ -48,10 +48,13 @@ export function SessionBrowser({
                   {isCurrent ? MARK.sessionCurrent : MARK.sessionOther}{" "}
                 </Text>
                 {session.meta.id}
-                <Text {...INK.ghost}>
+                <Text {...INK.dim}>
                   {" "}
-                  · {session.meta.provider}/{session.meta.model} ·{" "}
-                  {session.messages.length} msgs · {timeAgo(session.meta.createdAt)}
+                  {session.meta.provider}/{session.meta.model}
+                  {"  "}
+                  {session.messages.length} msgs
+                  {"  "}
+                  {timeAgo(session.meta.createdAt)}
                 </Text>
               </Text>
             </Box>

@@ -28,7 +28,27 @@ export interface ToolView {
   output?: string;
 }
 
-export type ViewEntry = MessageView | NoticeView | ToolView;
+/** One row of a rendered panel: a label, its detail, and an optional tag. */
+export interface PanelRow {
+  label: string;
+  detail: string;
+  tag?: string;
+}
+
+/**
+ * A titled list — used by /skills, /help, and anything else that answers
+ * "show me the set of X". Rendered as real rows, never as a dim blob,
+ * so command output is actually readable.
+ */
+export interface PanelView {
+  kind: "panel";
+  title: string;
+  rows: PanelRow[];
+  /** Shown instead of rows when the set is empty. */
+  emptyText?: string;
+}
+
+export type ViewEntry = MessageView | NoticeView | ToolView | PanelView;
 
 export interface ChatViewState {
   entries: ViewEntry[];
@@ -144,6 +164,22 @@ export function reduceChatEvent(
 /** Local (non-Provider) message shown as a ghost notice line. */
 export function appendNotice(state: ChatViewState, text: string): ChatViewState {
   return { ...state, entries: [...state.entries, { kind: "notice", text }] };
+}
+
+/** Append a titled panel — the surface every "list the X" command uses. */
+export function appendPanel(
+  state: ChatViewState,
+  title: string,
+  rows: PanelRow[],
+  emptyText?: string,
+): ChatViewState {
+  return {
+    ...state,
+    entries: [
+      ...state.entries,
+      { kind: "panel", title, rows, ...(emptyText !== undefined ? { emptyText } : {}) },
+    ],
+  };
 }
 
 /** Replace the whole entry list — used by session replay and /new. */

@@ -1,57 +1,57 @@
 /**
- * 水墨 theme — traditional Chinese ink wash, monochrome.
+ * Terminal-native theme — Claude Code / opencode language.
  *
- * Hierarchy comes from ink density (weight/brightness), never hue:
- *   浓 thick ink   -> bold, terminal foreground   (user, titles, emphasis)
- *   body           -> terminal foreground         (agent prose)
- *   淡 light wash  -> gray                        (secondary labels, details)
- *   faded residue  -> dimColor                    (metadata, hints)
+ * Hierarchy comes from weight and brightness, with a single accent hue:
+ *   strong  -> bold, terminal foreground   (user input, titles, emphasis)
+ *   body    -> terminal foreground         (agent prose, tool output)
+ *   dim     -> gray                        (secondary labels, metadata)
+ *   faint   -> dimColor                    (tertiary hints only — never
+ *                                           used for anything the user must
+ *                                           read; dimColor is near-invisible
+ *                                           on many terminals)
  *
- * The single accent — vermilion, like the seal stamp (印章) on a painting —
- * belongs to exactly two things: the title stamp and errors.
+ * One accent (cyan) marks interactive/agent identity. Red is reserved for
+ * errors, green for success, yellow for warnings. Nothing else is coloured.
  */
 
 export const INK = {
-  /** 浓 thick ink */
+  /** Bold terminal foreground: user input, headings, emphasis. */
   strong: { bold: true as const },
-  /** body ink — no overrides, respects the user's terminal palette */
+  /** Default terminal foreground. */
   body: {},
-  /** 淡 light wash */
-  faint: { color: "gray" as const },
-  /** faded residue */
-  ghost: { dimColor: true as const },
-  /** the seal — title stamp and errors, nothing else */
-  seal: { color: "red" as const, bold: true as const },
+  /** Readable secondary: labels, metadata, details. */
+  dim: { color: "gray" as const },
+  /** Tertiary hints only. Not for content the user must read. */
+  faint: { dimColor: true as const },
+  /** The single accent: agent identity, active selection, prompt. */
+  accent: { color: "cyan" as const },
+  ok: { color: "green" as const },
+  warn: { color: "yellow" as const },
+  error: { color: "red" as const, bold: true as const },
 } as const;
 
-/** Brush marks and state glyphs. */
+/** Glyphs. Terminal-native, no decorative corner brackets. */
 export const MARK = {
-  userStroke: "▌",
-  agentStroke: "▏",
-  toolRunning: "⋯",
+  /** Input prompt and user turns. */
+  prompt: "❯",
+  /** Agent turns and tool activity. */
+  assistant: "●",
   toolDone: "✓",
   toolFailed: "✗",
   bullet: "•",
-  notice: "ℹ",
-  prompt: "❯",
+  notice: "·",
   sessionCurrent: "●",
   sessionOther: "○",
 } as const;
 
-/** Spinner frames: an ink drop blooming on paper. */
-export const DROP_FRAMES = ["·", "•", "•", "●", "•"] as const;
-
-/** Corner-bracket label, e.g. label("sessions") -> 「sessions」 */
-export function label(text: string): string {
-  return `「${text}」`;
-}
+/** Spinner frames — braille dots, the terminal convention. */
+export const DROP_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 export function roleLabel(role: "you" | "agent"): string {
-  const stroke = role === "you" ? MARK.userStroke : MARK.agentStroke;
-  return `${stroke} ${label(role)}`;
+  return role === "you" ? `${MARK.prompt} you` : `${MARK.assistant} agent`;
 }
 
-/** 留白 — open paper: margins, rhythm, and soft rules instead of boxes. */
+/** 留白 — gutter and rhythm. Rules are used sparingly, never as decoration. */
 export const PAPER = {
   marginLeft: 3,
   maxWidth: 84,
@@ -59,9 +59,9 @@ export const PAPER = {
 
 export const SPACE = {
   /** blank lines between Turns */
-  turnGap: 2,
+  turnGap: 1,
   /** columns of indent under a role label */
-  contentIndent: 4,
+  contentIndent: 2,
 } as const;
 
 export const RULE = {

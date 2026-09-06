@@ -1,4 +1,4 @@
-import { Box, Static, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput } from "ink";
 import React, { useEffect, useRef, useState } from "react";
 import TextInput from "ink-text-input";
 import type { AgentHarness } from "../harness/harness.js";
@@ -7,29 +7,32 @@ import type { LoadedSession, SessionStore } from "../session/store.js";
 import type { ChatMessage } from "../agent/types.js";
 import { MarkdownLite } from "./markdown.js";
 import { SessionBrowser } from "./session-browser.js";
-import { suggestCommands } from "./commands.js";
+import { SLASH_COMMANDS, suggestCommands } from "./commands.js";
 import {
-  EmptyPaper,
   ErrorLine,
-  InkDropSpinner,
+  Header,
   NoticeLine,
+  Panel,
   Paper,
   PaperText,
   PermissionBlock,
   RoleBlock,
-  Rule,
-  SealHeader,
+  Spinner,
+  StatusBar,
   SuggestionList,
   ToolStatusLine,
+  Welcome,
 } from "./ink.js";
 import {
   appendNotice,
+  appendPanel,
   initialViewState,
   reduceChatEvent,
   replaceEntries,
   setError,
   setBusy,
   type ChatViewState,
+  type PanelRow,
   type ViewEntry,
 } from "./view.js";
 import { MARK, SPACE } from "./theme.js";
@@ -62,6 +65,13 @@ export function App({
   const busy = view.busy;
   const currentRequest = pending[0];
 
+  // Reset the highlight synchronously with the edit. Doing this in an effect
+  // let a late effect run clobber an arrow keypress made just after typing.
+  const handleChange = (next: string): void => {
+    setValue(next);
+    setSelectedSuggestion(0);
+  };
+
   useEffect(() => {
     gate.onPendingChange((p) => {
       setPending(p);
@@ -70,7 +80,6 @@ export function App({
     return () => gate.onPendingChange(() => {});
   }, [gate]);
 
-  useEffect(() => setSelectedSuggestion(0), [value]);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
@@ -108,7 +117,7 @@ export function App({
         setView((s) =>
           appendNotice(
             s,
-            `always allowing ${currentRequest.toolName} · ${currentRequest.ruleKey} this session`,
+            `always allowing ${currentRequest.toolName} ${currentRequest.ruleKey} this session`,
           ),
         );
       }
@@ -148,13 +157,11 @@ export function App({
         (m): m is Extract<ChatMessage, { role: "user" | "assistant" }> =>
           m.role === "user" || m.role === "assistant",
       ).map((m) => ({ kind: "message", role: m.role, content: m.content }));
-      setView(
-        replaceEntries(
-          appendNotice(
-            initialViewState(),
-            `switched to session ${loaded.meta.id} (${loaded.messages.length} messages)`,
-          ),
-          replayed,
+      // Notice last: replaceEntries would otherwise wipe the confirmation.
+      setView((s) =>
+        appendNotice(
+          replaceEntries(s, replayed),
+          `switched to session ${loaded.meta.id}, ${loaded.messages.length} messages`,
         ),
       );
     } catch (err) {
@@ -170,19 +177,40 @@ export function App({
     const remaining = (await store.list()).filter((s) => s.meta.id !== target.meta.id);
     if (wasCurrent) {
       await service.newSession();
-      setView(
-        replaceEntries(
-          appendNotice(
-            initialViewState(),
-            `deleted ${target.meta.id} (was current) — started ${service.id}`,
-          ),
-          [],
+      setView((s) =>
+        appendNotice(
+          replaceEntries(s, []),
+          `deleted ${target.meta.id}, started ${service.id}`,
         ),
       );
     } else {
       setView((s) => appendNotice(s, `deleted session ${target.meta.id}`));
     }
     setBrowser({ sessions: remaining, selected: 0 });
+  };
+
+  /** Rows for /skills: one per registered skill, alphabetically. */
+  const skillRows = (): PanelRow[] =>
+    [...service.skills.list()]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((s) => ({
+        label: `/${s.name}`,
+        tag: s.invocation,
+        detail: s.description === "" ? s.source : s.description,
+      }));
+
+  const showHelp = (): void => {
+    const commandRows: PanelRow[] = SLASH_COMMANDS.map((c) => ({
+      label: `/${c.name}`,
+      detail: c.description,
+    }));
+    const keyRows: PanelRow[] = [
+      { label: "y / n", detail: "allow once / deny a tool call" },
+      { label: "a", detail: "always allow that tool this session" },
+      { label: "v", detail: "toggle full tool output during a turn" },
+      { label: "ctrl+c", detail: "abort and quit" },
+    ];
+    setView((s) => appendPanel(appendPanel(s, "Commands", commandRows), "Keys", keyRows));
   };
 
   const executeCommand = (command: string): boolean => {
@@ -192,18 +220,15 @@ export function App({
         exit();
         return true;
       case "/help":
-        setView((s) =>
-          appendNotice(
-            s,
-            "commands: /help, /new, /session, /verbose, /exit · permissions: y once, n no, a always this session · v toggles tool output during a Turn · flags: --yolo, --provider, --continue",
-          ),
-        );
+        showHelp();
         return true;
       case "/new":
         if (busy || currentRequest) return false;
         void (async () => {
           await service.newSession();
-          setView(replaceEntries(appendNotice(initialViewState(), `started new session ${service.id}`), []));
+          setView((s) =>
+            appendNotice(replaceEntries(s, []), `started new session ${service.id}`),
+          );
         })();
         return true;
       case "/session":
@@ -217,15 +242,15 @@ export function App({
         setView((s) => appendNotice(s, `tool output ${verboseTool ? "hidden" : "shown"}`));
         return true;
       case "/skills": {
-        const all = service.skills.list();
-        if (all.length === 0) {
-          setView((s) => appendNotice(s, "No skills available."));
-        } else {
-          const lines = all
-            .map((s) => `  /${s.name}  ${s.invocation === "user" ? "[user]" : "[model]"}  ${s.description}`)
-            .join("\n");
-          setView((s) => appendNotice(s, `Available skills (${all.length}):\n${lines}`));
-        }
+        const rows = skillRows();
+        setView((s) =>
+          appendPanel(
+            s,
+            `Skills (${rows.length})`,
+            rows,
+            "no skills found, add a directory containing SKILL.md under skills/ or .agents/skills/",
+          ),
+        );
         return true;
       }
       default:
@@ -243,24 +268,31 @@ export function App({
       return;
     }
 
-    // still typing a bare "/xyz": complete highlighted suggestion or reject
-    if (/^\/[a-zA-Z][a-zA-Z0-9-]*$/.test(trimmed)) {
+    // A bare command token — "/" alone, "/ski", "/skills-x". Enter runs the
+    // highlighted suggestion, so arrowing down to /skills and pressing enter
+    // actually runs it instead of sending "/" to the model.
+    let outgoing = trimmed;
+    if (/^\/[a-zA-Z0-9-]*$/.test(trimmed)) {
       const pick =
-        suggestions.length > 0 ? suggestions[Math.min(selectedSuggestion, suggestions.length - 1)] : undefined;
-      if (pick !== undefined) {
-        // If the pick is a skill, invoke it immediately.
-        if (service.skills.has(pick.name)) {
+        suggestions.length > 0
+          ? suggestions[Math.min(selectedSuggestion, suggestions.length - 1)]
+          : undefined;
+
+      if (pick === undefined) {
+        setView((s) => appendNotice(s, `unknown command "${trimmed}", try /help or /skills`));
+        setValue("");
+        return;
+      }
+
+      if (service.skills.has(pick.name)) {
+        // Skill invocation — hand the skill's own command to the harness.
+        outgoing = `/${pick.name}`;
+      } else {
+        if (executeCommand(`/${pick.name}`)) {
           setValue("");
-          // Fall through to run() below.
-        } else {
-          setValue(`/${pick.name}`);
           return;
         }
-      } else if (service.skills.has(trimmed.slice(1))) {
-        // Direct skill name match — let it fall through to run().
-        setValue("");
-      } else {
-        setView((s) => appendNotice(s, `unknown command "${trimmed}" — try /help or /skills`));
+        setView((s) => appendNotice(s, `unknown command "${trimmed}", try /help`));
         setValue("");
         return;
       }
@@ -275,7 +307,7 @@ export function App({
 
     void (async () => {
       try {
-        for await (const event of service.run(trimmed, controller.signal)) {
+        for await (const event of service.run(outgoing, controller.signal)) {
           setView((prev) => reduceChatEvent(prev, event as any));
         }
       } catch (err) {
@@ -288,35 +320,34 @@ export function App({
 
   return (
     <Paper>
-      <SealHeader />
+      <Header />
 
-      <Static items={view.entries}>
-        {(entry, i) => {
-          const startsTurn = entry.kind === "message" && entry.role === "user" && i > 0;
-          return (
-            <Box key={i} flexDirection="column" marginTop={entry.kind === "tool" ? 0 : SPACE.turnGap}>
-              {startsTurn && <Rule weight="light" />}
-              <EntryLine entry={entry} verbose={verboseTool} />
-            </Box>
-          );
-        }}
-      </Static>
+      {/*
+        Deliberately NOT <Static>: entries can be replaced wholesale (/new,
+        session switch, delete), and Static only draws items it has not yet
+        rendered, so replaced content would silently never appear.
+      */}
+      <Box flexDirection="column">
+        {view.entries.map((entry, i) => (
+          <Box key={i} flexDirection="column" marginTop={SPACE.turnGap}>
+            <EntryLine entry={entry} verbose={verboseTool} />
+          </Box>
+        ))}
+      </Box>
 
-      {view.entries.length === 0 && !busy && browser === undefined && (
-        <EmptyPaper />
-      )}
+      {view.entries.length === 0 && !busy && browser === undefined && <Welcome />}
 
-      <Box marginTop={busy ? SPACE.turnGap : 1}>
-        {busy ? (
-          view.liveText ? (
+      {busy ? (
+        <Box marginTop={1}>
+          {view.liveText ? (
             <RoleBlock role="agent">
               <MarkdownLite text={view.liveText} />
             </RoleBlock>
           ) : (
-            <InkDropSpinner label="thinking…" />
-          )
-        ) : null}
-      </Box>
+            <Spinner label="thinking" />
+          )}
+        </Box>
+      ) : null}
 
       {view.error ? (
         <Box marginTop={1}>
@@ -340,35 +371,30 @@ export function App({
             <SuggestionList commands={suggestions} selected={selectedSuggestion} />
           )}
           <Box marginLeft={SPACE.contentIndent}>
-            <Text {...INK_PROMPT}>
-              {MARK.prompt}{" "}
-            </Text>
+            <Text {...{ bold: true, color: "cyan" }}>{MARK.prompt} </Text>
             <TextInput
               value={value}
-              onChange={setValue}
+              onChange={handleChange}
               onSubmit={submit}
-              placeholder='Type a message… ("/" for commands)'
+              placeholder="Ask a question, or / for commands"
             />
           </Box>
         </>
       )}
 
-      <Box marginTop={1}>
-        <Rule weight="light" />
-      </Box>
-      <Box>
-        <Text {...{ dimColor: true }}>
-          session {service.id} · {service.meta.provider}/{service.meta.model} · cwd{" "}
-          {service.cwd}
-          {allowedRules.length > 0 ? ` · always-allow: ${allowedRules.join(", ")}` : ""}
-          {verboseTool ? " · tool output shown" : ""}
-        </Text>
-      </Box>
+      <StatusBar
+        fields={[
+          `session ${service.id}`,
+          `${service.meta.provider}/${service.meta.model}`,
+          `cwd ${service.cwd}`,
+          `${service.skills.size} skills`,
+          ...(allowedRules.length > 0 ? [`always: ${allowedRules.join(", ")}`] : []),
+          ...(verboseTool ? ["tool output shown"] : []),
+        ]}
+      />
     </Paper>
   );
 }
-
-const INK_PROMPT = { bold: true as const };
 
 function EntryLine({
   entry,
@@ -392,5 +418,7 @@ function EntryLine({
       return <NoticeLine text={entry.text} />;
     case "tool":
       return <ToolStatusLine entry={entry} verbose={verbose} />;
+    case "panel":
+      return <Panel view={entry} />;
   }
 }

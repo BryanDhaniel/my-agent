@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ChatMessage } from "../agent/types.js";
+import { isContextSummary, type ContextSummary } from "../context/summary.js";
 
 export interface SessionMeta {
   id: string;
@@ -11,12 +12,20 @@ export interface SessionMeta {
   createdAt: string;
 }
 
+/**
+ * A Session is a transcript plus the compaction produced while writing it.
+ * Memory is deliberately not part of a Session: it outlives it.
+ */
 export interface LoadedSession {
   meta: SessionMeta;
   messages: ChatMessage[];
+  summary?: ContextSummary;
 }
 
-type SessionLine = { type: "meta"; meta: SessionMeta } | { type: "message"; message: ChatMessage };
+type SessionLine =
+  | { type: "meta"; meta: SessionMeta }
+  | { type: "message"; message: ChatMessage }
+  | { type: "summary"; summary: ContextSummary };
 
 export class SessionStore {
   readonly dir: string;
@@ -42,6 +51,12 @@ export class SessionStore {
 
   async append(id: string, message: ChatMessage): Promise<void> {
     const line: SessionLine = { type: "message", message };
+    await writeFile(this.#file(id), JSON.stringify(line) + "\n", { flag: "a", encoding: "utf8" });
+  }
+
+  /** Append a compaction. The newest one wins on load. */
+  async appendSummary(id: string, summary: ContextSummary): Promise<void> {
+    const line: SessionLine = { type: "summary", summary };
     await writeFile(this.#file(id), JSON.stringify(line) + "\n", { flag: "a", encoding: "utf8" });
   }
 
@@ -85,13 +100,30 @@ export class SessionStore {
 export function parseSession(raw: string): LoadedSession | undefined {
   const messages: ChatMessage[] = [];
   let meta: SessionMeta | undefined;
+  let summary: ContextSummary | undefined;
 
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
-    const parsed = JSON.parse(line) as SessionLine;
-    if (parsed.type === "meta") meta = parsed.meta;
-    else messages.push(parsed.message);
+
+    let parsed: SessionLine;
+    try {
+      parsed = JSON.parse(line) as SessionLine;
+    } catch {
+      continue; // A corrupt line must not make a whole session unreadable.
+    }
+
+    switch (parsed.type) {
+      case "meta":
+        meta = parsed.meta;
+        break;
+      case "message":
+        messages.push(parsed.message);
+        break;
+      case "summary":
+        if (isContextSummary(parsed.summary)) summary = parsed.summary;
+        break;
+    }
   }
 
-  return meta ? { meta, messages } : undefined;
+  return meta ? { meta, messages, ...(summary !== undefined ? { summary } : {}) } : undefined;
 }

@@ -126,6 +126,38 @@ describe("ChatViewState reducer", () => {
     assert.equal(state.error, "boom");
   });
 
+  it("renders memory lifecycle events as notices, not transcript entries", () => {
+    const state = run(
+      initialViewState(),
+      { type: "memory-recalled", count: 3 },
+      { type: "memory-stored", count: 1 },
+      { type: "context-compacted", coveredMessages: 12 },
+    );
+    assert.equal(state.entries.length, 3);
+    assert.deepEqual(
+      state.entries.map((e) => (e.kind === "notice" ? e.text : `not-a-notice:${e.kind}`)),
+      [
+        "memory · recalled 3 memories",
+        "memory · saved 1 memory",
+        "context compacted · 12 messages summarized",
+      ],
+    );
+  });
+
+  it("does not drop conversation content when memory events interleave", () => {
+    const state = run(
+      initialViewState(),
+      { type: "user-message", message: { role: "user", content: "remember we use pnpm" } },
+      { type: "memory-recalled", count: 2 },
+      { type: "assistant-message", message: { role: "assistant", content: "noted" } },
+      { type: "memory-stored", count: 1 },
+    );
+    assert.deepEqual(
+      state.entries.map((e) => (e.kind === "notice" ? "notice" : e.kind)),
+      ["message", "notice", "message", "notice"],
+    );
+  });
+
   it("appendNotice / replaceEntries / setBusy / setError behave purely", () => {
     const base = initialViewState();
     const noticed = appendNotice(base, "hint");

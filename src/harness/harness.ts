@@ -19,7 +19,25 @@ import type { AgentEvent } from "./events.js";
 import { AgentRuntime } from "./runtime.js";
 import { McpManager, type McpConfig } from "../mcp/index.js";
 import { SkillRegistry, SkillResolver, SkillResolverError } from "../skills/index.js";
+import {
+  LocalMemoryStore,
+  MemoryManager,
+  extractMemoryCandidates,
+  type MemoryStore,
+} from "../memory/index.js";
+import type { ContextSummary } from "../context/summary.js";
 import type { SlashCommand } from "../ui/commands.js";
+
+/** Constraints that must survive every trim, so they live in the context, not the prompt. */
+export const PERMISSION_CONSTRAINTS = [
+  "## Permissions",
+  "- Mutating Tool Calls (writes, edits, shell commands) require approval before they run.",
+  "- A denied Tool Call comes back to you as an error. Do not retry it unchanged — propose an alternative.",
+  "- Never ask for secrets, API keys or tokens, and never write them to files or memory.",
+].join("\n");
+
+/** How many memories a single run may bring into context. */
+const MEMORY_TOP_K = 8;
 
 export function buildSystemPrompt(
   cwd: string,
@@ -54,6 +72,10 @@ export interface AgentHarnessOptions {
   mcpConfig?: McpConfig;
   /** Pre-built SkillRegistry. When set, skills are available for invocation. */
   skills?: SkillRegistry;
+  /** Pre-built MemoryManager. When omitted, a LocalMemoryStore under the cwd is used. */
+  memory?: MemoryManager;
+  /** Backing store for the default MemoryManager. Ignored when `memory` is set. */
+  memoryStore?: MemoryStore;
 }
 
 export class AgentHarness {
@@ -68,6 +90,7 @@ export class AgentHarness {
   #mcpManager?: McpManager;
   #skills: SkillRegistry;
   #skillResolver: SkillResolver;
+  #memory?: MemoryManager;
   readonly cwd: string;
 
   private constructor(
@@ -81,6 +104,7 @@ export class AgentHarness {
     context: ContextManager,
     topLevel: string,
     skills: SkillRegistry,
+    summary?: ContextSummary,
   ) {
     this.#provider = provider;
     this.#store = store;
@@ -90,6 +114,11 @@ export class AgentHarness {
     this.#skills = skills;
     this.#skillResolver = new SkillResolver(skills);
     this.cwd = cwd;
+
+    // Context is rebuilt, not persisted: the summary comes from the session
+    // log, the permission constraints are a property of the harness.
+    this.#context.restoreSummary(summary);
+    this.#context.setPermissionContext(PERMISSION_CONSTRAINTS);
 
     // Build skill catalog for model-invoked skills.
     const modelSkills = skills.listModelInvoked();
@@ -130,6 +159,13 @@ export class AgentHarness {
       loaded = await store.latest();
     }
 
+    // Memory is loaded once per harness and outlives individual Sessions.
+    const memory =
+      opts.memory ??
+      (await MemoryManager.create({
+        store: opts.memoryStore ?? new LocalMemoryStore(LocalMemoryStore.defaultPath(cwd)),
+      }));
+
     let harness: AgentHarness;
     if (loaded) {
       harness = new AgentHarness(
@@ -143,6 +179,7 @@ export class AgentHarness {
         context,
         await topLevelListing(cwd),
         skills,
+        loaded.summary,
       );
     } else {
       const meta: SessionMeta = {
@@ -168,6 +205,7 @@ export class AgentHarness {
     }
 
     harness.#mcpManager = mcpManager;
+    harness.#memory = memory;
     return harness;
   }
 
@@ -214,6 +252,16 @@ export class AgentHarness {
     }));
   }
 
+  /** The MemoryManager for this harness — durable knowledge, not conversation. */
+  get memory(): MemoryManager | undefined {
+    return this.#memory;
+  }
+
+  /** The ContextManager — read-only access for inspection and diagnostics. */
+  get context(): ContextManager {
+    return this.#context;
+  }
+
   async newSession(): Promise<void> {
     const meta: SessionMeta = {
       id: SessionStore.newId(),
@@ -222,41 +270,46 @@ export class AgentHarness {
       createdAt: new Date().toISOString(),
     };
     await this.#store.create(meta);
-    this.#resetTo(meta, []);
+    // A new Session starts with a clean context: no summary, no active skills.
+    this.#resetTo(meta, [], undefined);
   }
 
   async switchTo(id: string): Promise<LoadedSession> {
     const loaded = await this.#store.load(id);
     if (!loaded) throw new Error(`Session not found: ${id}`);
-    this.#resetTo(loaded.meta, loaded.messages);
+    this.#resetTo(loaded.meta, loaded.messages, loaded.summary);
     return loaded;
   }
 
-  #resetTo(meta: SessionMeta, history: ChatMessage[]): void {
+  #resetTo(meta: SessionMeta, history: ChatMessage[], summary?: ContextSummary): void {
     this.#meta = meta;
     const systemPrompt = this.#history.find((m) => m.role === "system");
     this.#history = systemPrompt ? [systemPrompt, ...history] : [...history];
+    // Memory is untouched: it belongs to the project, not to the Session.
+    this.#context.restoreSummary(summary);
+    this.#context.clearSkills();
+    this.#context.clearRunContext();
   }
 
   async *run(text: string, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
     this.#state = startRun(this.#state);
     yield { type: "agent-started", sessionId: this.#meta.id };
 
+    // Per-run context is rebuilt from scratch; retrieved memories from the
+    // previous run must not leak into this one.
+    this.#context.clearRunContext();
+
     // Skill interception: if the text starts with /skillname, resolve the
-    // skill and inject its instructions as a system message.
+    // skill and offer its instructions to the ContextManager. They are
+    // context, not history — so they are budgeted and prioritizable instead
+    // of accumulating in the persisted transcript.
     let effectiveText = text;
     const skillMatch = /^\/([a-zA-Z][a-zA-Z0-9-]*)(?:\s|$)/.exec(text);
     if (skillMatch) {
       const skillName = skillMatch[1]!;
       try {
         const skill = this.#skillResolver.resolve(skillName);
-        // Inject skill instructions as a system message so the model
-        // sees them. ContextManager preserves system messages during trimming.
-        const skillSystem: ChatMessage = {
-          role: "system",
-          content: `[Skill: ${skill.name}]\n\n${skill.instructions}`,
-        };
-        this.#history.push(skillSystem);
+        this.#context.addSkillContext({ name: skill.name, instructions: skill.instructions });
         yield { type: "skill-activated", name: skill.name } as AgentEvent;
 
         // Strip the /skillname prefix — pass remaining text (or skill description) to the model.
@@ -266,6 +319,28 @@ export class AgentHarness {
         if (!(err instanceof SkillResolverError)) throw err;
         // Not a skill — fall through to normal processing.
       }
+    }
+
+    // The request itself is the active task — second only to the system
+    // prompt in priority, so it survives even aggressive trimming.
+    this.#context.setTaskContext(effectiveText);
+
+    // Memory retrieval feeds the ContextManager, never the prompt: the agent
+    // never assembles a memory block by hand. This has to happen before the
+    // loop starts, but the event is announced after the user message so the
+    // notice stays grouped with the turn it belongs to.
+    let recalledCount = 0;
+    if (this.#memory !== undefined) {
+      const recalled = await this.#memory.retrieve({ text: effectiveText, topK: MEMORY_TOP_K });
+      this.#context.setMemoryContext(
+        recalled.map((r) => ({
+          id: r.memory.id,
+          content: r.memory.content,
+          category: r.memory.category,
+          importance: r.memory.importance,
+        })),
+      );
+      recalledCount = recalled.length;
     }
 
     const userMessage: Extract<ChatMessage, { role: "user" }> = {
@@ -278,6 +353,10 @@ export class AgentHarness {
       yield { type: "error", error: persistErr };
     }
     yield { type: "user-message", message: userMessage };
+
+    if (recalledCount > 0) {
+      yield { type: "memory-recalled", count: recalledCount };
+    }
 
     const runtime = new AgentRuntime({
       provider: this.#provider,
@@ -317,6 +396,13 @@ export class AgentHarness {
       }
     }
 
+    // Compaction before memory extraction, so extraction sees the whole run.
+    yield* this.#compactContext();
+
+    if (outcome.status === "completed") {
+      yield* this.#extractMemories([userMessage, ...outcome.additions]);
+    }
+
     if (outcome.status === "cancelled") {
       this.#state = cancelRun(this.#state);
       yield { type: "agent-cancelled" };
@@ -338,6 +424,48 @@ export class AgentHarness {
     } catch (err) {
       return err instanceof Error ? err : new Error(String(err));
     }
+  }
+
+  /**
+   * Fold the conversation into a summary when it outgrows its budget.
+   *
+   * The transcript on disk stays complete — only the window the
+   * ContextManager reads from moves. Persistence failures degrade to an
+   * error event, exactly like message persistence.
+   */
+  async *#compactContext(): AsyncGenerator<AgentEvent> {
+    const result = await this.#context.compact(this.#history);
+    if (result === undefined) return;
+
+    try {
+      await this.#store.appendSummary(this.#meta.id, result.summary);
+    } catch (err) {
+      yield { type: "error", error: err instanceof Error ? err : new Error(String(err)) };
+    }
+    yield { type: "context-compacted", coveredMessages: result.coveredMessages };
+  }
+
+  /**
+   * Decide whether this run produced anything worth remembering.
+   *
+   * Extraction is conservative by design; the MemoryManager does the final
+   * safety gate, so a rejected candidate simply is not stored.
+   */
+  async *#extractMemories(messages: readonly ChatMessage[]): AsyncGenerator<AgentEvent> {
+    if (this.#memory === undefined) return;
+
+    const candidates = extractMemoryCandidates({ messages, sessionId: this.#meta.id });
+    let stored = 0;
+
+    for (const candidate of candidates) {
+      const result = await this.#memory.store({
+        ...candidate,
+        source: `session:${this.#meta.id}`,
+      });
+      if (result.status !== "rejected") stored++;
+    }
+
+    yield { type: "memory-stored", count: stored };
   }
 }
 

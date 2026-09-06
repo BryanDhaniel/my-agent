@@ -7,3 +7,5 @@ dist/
 .DS_Store
 .agents
 skills-lock.json
+.memory/
+.workbuddy-ai

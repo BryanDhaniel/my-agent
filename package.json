@@ -12,7 +12,8 @@
     "smoke:openai": "tsx scripts/smoke-openai.ts",
     "smoke:agent": "tsx scripts/smoke-agent.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke:tui": "tsx scripts/smoke-tui.tsx"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

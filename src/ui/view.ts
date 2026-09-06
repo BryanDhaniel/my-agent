@@ -115,6 +115,27 @@ export function reduceChatEvent(
           event.error instanceof Error ? event.error.message : String(event.error),
       };
 
+    // Memory / context lifecycle events carry no conversation content — they
+    // surface as ghost notices so the user can see what the harness is doing
+    // without them polluting the transcript.
+    case "memory-recalled":
+      return appendNotice(
+        state,
+        `memory · recalled ${plural(event.count, "memory", "memories")}`,
+      );
+
+    case "memory-stored":
+      return appendNotice(
+        state,
+        `memory · saved ${plural(event.count, "memory", "memories")}`,
+      );
+
+    case "context-compacted":
+      return appendNotice(
+        state,
+        `context compacted · ${plural(event.coveredMessages, "message", "messages")} summarized`,
+      );
+
     default:
       return state;
   }
@@ -139,6 +160,10 @@ export function setError(state: ChatViewState, message?: string): ChatViewState 
 
 export function setBusy(state: ChatViewState, busy: boolean): ChatViewState {
   return { ...state, busy };
+}
+
+function plural(count: number, singular: string, many: string): string {
+  return `${count} ${count === 1 ? singular : many}`;
 }
 
 function updateTool(

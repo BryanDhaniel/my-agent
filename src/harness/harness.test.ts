@@ -5,19 +5,28 @@ import { AgentRuntime } from "./runtime.js";
 import { SessionStore } from "../session/store.js";
 import { ToolRegistry } from "../agent/registry.js";
 import { AutoApproveGate, DenyAllGate } from "../permissions/gate.js";
+import { ContextManager } from "../context/manager.js";
+import { LocalMemoryStore, MemoryManager } from "../memory/index.js";
 import type { Provider, StreamEvent } from "../providers/provider.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SkillRegistry } from "../skills/index.js";
 import type { Skill } from "../skills/index.js";
+import type { AgentEvent } from "./events.js";
+import type { AgentHarnessOptions } from "./harness.js";
 
 class MockProvider implements Provider {
   readonly name = "mock";
   readonly model = "mock-model";
   responses: Array<StreamEvent[]> = [];
+  /** Everything the model was last shown, for context assertions. */
+  lastMessages: import("../agent/types.js").ChatMessage[] = [];
 
-  async *stream(): AsyncGenerator<StreamEvent> {
+  async *stream(
+    messages: import("../agent/types.js").ChatMessage[],
+  ): AsyncGenerator<StreamEvent> {
+    this.lastMessages = messages;
     const events = this.responses.shift() ?? [
       {
         type: "done",
@@ -47,20 +56,29 @@ describe("AgentHarness & AgentRuntime", () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
+  /**
+   * Every harness in this file runs inside the temp directory, so the default
+   * memory store never touches the real project.
+   */
+  function create(opts: AgentHarnessOptions = {}): Promise<AgentHarness> {
+    return AgentHarness.create(provider, { store, registry, cwd: tmpDir, ...opts });
+  }
+
+  async function run(harness: AgentHarness, text: string): Promise<AgentEvent[]> {
+    const events: AgentEvent[] = [];
+    for await (const event of harness.run(text)) {
+      events.push(event);
+    }
+    return events;
+  }
+
   it("executes a basic prompt and updates run state to completed", async () => {
-    const harness = await AgentHarness.create(provider, {
-      store,
-      registry,
-      gate: new AutoApproveGate(),
-    });
+    const harness = await create({ gate: new AutoApproveGate() });
 
     expect(harness.state.status).toBe("idle");
     expect(harness.state.turns).toBe(0);
 
-    const events = [];
-    for await (const event of harness.run("Hi there")) {
-      events.push(event);
-    }
+    const events = await run(harness, "Hi there");
 
     expect(harness.state.status).toBe("completed");
     expect(harness.state.turns).toBe(1);
@@ -102,16 +120,9 @@ describe("AgentHarness & AgentRuntime", () => {
       ],
     ];
 
-    const harness = await AgentHarness.create(provider, {
-      store,
-      registry,
-      gate: new AutoApproveGate(),
-    });
+    const harness = await create({ gate: new AutoApproveGate() });
 
-    const events = [];
-    for await (const event of harness.run("Test tool")) {
-      events.push(event);
-    }
+    const events = await run(harness, "Test tool");
 
     expect(harness.state.status).toBe("completed");
     expect(harness.state.turns).toBe(2);
@@ -152,16 +163,9 @@ describe("AgentHarness & AgentRuntime", () => {
       ],
     ];
 
-    const harness = await AgentHarness.create(provider, {
-      store,
-      registry,
-      gate: new DenyAllGate(),
-    });
+    const harness = await create({ gate: new DenyAllGate() });
 
-    const events = [];
-    for await (const event of harness.run("Do danger")) {
-      events.push(event);
-    }
+    const events = await run(harness, "Do danger");
 
     const denied = events.filter((e) => e.type === "tool-denied");
     expect(denied.length).toBe(1);
@@ -170,9 +174,7 @@ describe("AgentHarness & AgentRuntime", () => {
   it("registers MCP tools and makes them available to the runtime", async () => {
     // Simulate an MCP tool via mcpConfig with a failing command —
     // we just need to verify the harness handles MCP config gracefully.
-    const harness = await AgentHarness.create(provider, {
-      store,
-      registry,
+    const harness = await create({
       gate: new AutoApproveGate(),
       mcpConfig: {
         servers: {
@@ -225,16 +227,9 @@ describe("AgentHarness & AgentRuntime", () => {
       ],
     ];
 
-    const harness = await AgentHarness.create(provider, {
-      store,
-      registry,
-      gate: new AutoApproveGate(),
-    });
+    const harness = await create({ gate: new AutoApproveGate() });
 
-    const events = [];
-    for await (const event of harness.run("Use the echo tool")) {
-      events.push(event);
-    }
+    const events = await run(harness, "Use the echo tool");
 
     const results = events.filter((e) => e.type === "tool-result");
     expect(results.length).toBe(1);
@@ -242,7 +237,7 @@ describe("AgentHarness & AgentRuntime", () => {
   });
 
   it("close() is idempotent", async () => {
-    const harness = await AgentHarness.create(provider, { store, registry });
+    const harness = await create();
     await harness.close();
     await harness.close(); // should not throw
   });
@@ -267,17 +262,9 @@ describe("AgentHarness & AgentRuntime", () => {
       ],
     ];
 
-    const harness = await AgentHarness.create(provider, {
-      store,
-      registry,
-      gate: new AutoApproveGate(),
-      skills,
-    });
+    const harness = await create({ gate: new AutoApproveGate(), skills });
 
-    const events = [];
-    for await (const event of harness.run("/test-skill do the thing")) {
-      events.push(event);
-    }
+    const events = await run(harness, "/test-skill do the thing");
 
     const activated = events.filter((e) => e.type === "skill-activated");
     expect(activated.length).toBe(1);
@@ -301,11 +288,7 @@ describe("AgentHarness & AgentRuntime", () => {
       source: "/s/review",
     });
 
-    const harness = await AgentHarness.create(provider, {
-      store,
-      registry,
-      skills,
-    });
+    const harness = await create({ skills });
 
     const cmds = harness.skillCommands;
     expect(cmds.length).toBe(1);
@@ -322,15 +305,298 @@ describe("AgentHarness & AgentRuntime", () => {
       source: "/s/tdd",
     });
 
-    const harness = await AgentHarness.create(provider, {
-      store,
-      registry,
-      skills,
-    });
+    const harness = await create({ skills });
 
     const systemMsg = harness.messages.find((m) => m.role === "system");
     expect(systemMsg?.content).toContain("tdd");
     expect(systemMsg?.content).toContain("Test-driven development");
     expect(systemMsg?.content).toContain("Available skills");
+  });
+});
+
+describe("AgentHarness context lifecycle", () => {
+  let tmpDir: string;
+  let store: SessionStore;
+  let provider: MockProvider;
+  let registry: ToolRegistry;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "harness-context-"));
+    store = new SessionStore(tmpDir);
+    provider = new MockProvider();
+    registry = new ToolRegistry();
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function create(opts: AgentHarnessOptions = {}): Promise<AgentHarness> {
+    return AgentHarness.create(provider, { store, registry, cwd: tmpDir, ...opts });
+  }
+
+  async function run(harness: AgentHarness, text: string): Promise<AgentEvent[]> {
+    const events: AgentEvent[] = [];
+    for await (const event of harness.run(text)) {
+      events.push(event);
+    }
+    return events;
+  }
+
+  const seen = (harness: AgentHarness): string =>
+    provider.lastMessages.map((m) => m.content).join("\n");
+
+  it("sends the task and permission constraints to the model", async () => {
+    const harness = await create();
+    await run(harness, "Refactor the parser");
+    const text = seen(harness);
+
+    expect(text).toContain("## Active task");
+    expect(text).toContain("Refactor the parser");
+    expect(text).toContain("## Permissions");
+  });
+
+  it("routes skill instructions through the ContextManager, not the transcript", async () => {
+    const skills = new SkillRegistry();
+    skills.register({
+      name: "greet",
+      description: "Greet warmly.",
+      instructions: "Always greet the user warmly.",
+      invocation: "user",
+      source: "/s/greet",
+    });
+
+    const harness = await create({ skills });
+    const events = await run(harness, "/greet hello");
+
+    expect(events.some((e) => e.type === "skill-activated")).toBe(true);
+    expect(seen(harness)).toContain("Always greet the user warmly");
+    // Skill text must not accumulate in the persisted session.
+    expect(harness.messages.some((m) => m.content.includes("Always greet the user warmly"))).toBe(
+      false,
+    );
+  });
+
+  it("folds an oversized conversation into a summary and persists it", async () => {
+    const context = new ContextManager({
+      maxTokens: 200,
+      reservedOutputTokens: 0,
+      compactThreshold: 0.1,
+      protectedGroups: 1,
+      keepShare: 0.2,
+    });
+
+    const harness = await create({ context });
+    await run(harness, "first question about the architecture of this repository");
+    const events = await run(harness, "second question about the architecture of this repository");
+
+    expect(events.some((e) => e.type === "context-compacted")).toBe(true);
+
+    const reloaded = await store.load(harness.id);
+    expect(reloaded?.summary).toBeDefined();
+    expect(reloaded?.summary?.coveredMessages).toBeGreaterThan(0);
+    // The transcript itself is untouched.
+    expect(reloaded?.messages.length).toBe(4);
+
+    // Compaction happens after the last request, so inspect what the next
+    // request would contain rather than what the model just saw.
+    const next = harness.context.buildContext(harness.messages);
+    expect(next.map((m) => m.content).join("\n")).toContain(
+      "Earlier in this session (compacted)",
+    );
+  });
+
+  it("restores the compaction when the session is resumed", async () => {
+    const makeContext = () =>
+      new ContextManager({
+        maxTokens: 200,
+        reservedOutputTokens: 0,
+        compactThreshold: 0.1,
+        protectedGroups: 1,
+        keepShare: 0.2,
+      });
+
+    const first = await create({ context: makeContext() });
+    await run(first, "first question about the architecture of this repository");
+    await run(first, "second question about the architecture of this repository");
+
+    const resumed = await create({ sessionId: first.id, context: makeContext() });
+    expect(resumed.context.summary).toBeDefined();
+
+    const context = resumed.context.buildContext(resumed.messages);
+    expect(context.map((m) => m.content).join("\n")).toContain(
+      "Earlier in this session (compacted)",
+    );
+    // The covered turn is gone from the conversation — it only survives
+    // inside the summary's own task line.
+    const userTurns = context.filter((m) => m.role === "user").map((m) => m.content);
+    expect(userTurns).toEqual(["second question about the architecture of this repository"]);
+  });
+
+  it("starts a new session with a clean context", async () => {
+    const makeContext = () =>
+      new ContextManager({
+        maxTokens: 200,
+        reservedOutputTokens: 0,
+        compactThreshold: 0.1,
+        protectedGroups: 1,
+        keepShare: 0.2,
+      });
+
+    const harness = await create({ context: makeContext() });
+    await run(harness, "first question about the architecture of this repository");
+    await run(harness, "second question about the architecture of this repository");
+    expect(harness.context.summary).toBeDefined();
+
+    await harness.newSession();
+    expect(harness.context.summary).toBeUndefined();
+    expect(harness.messages.length).toBe(1); // system prompt only
+  });
+
+  it("switching sessions restores that session's summary", async () => {
+    const makeContext = () =>
+      new ContextManager({
+        maxTokens: 200,
+        reservedOutputTokens: 0,
+        compactThreshold: 0.1,
+        protectedGroups: 1,
+        keepShare: 0.2,
+      });
+
+    const harness = await create({ context: makeContext() });
+    await run(harness, "first question about the architecture of this repository");
+    await run(harness, "second question about the architecture of this repository");
+    const compactedId = harness.id;
+
+    await harness.newSession();
+    await harness.switchTo(compactedId);
+    expect(harness.context.summary).toBeDefined();
+  });
+});
+
+describe("AgentHarness memory lifecycle", () => {
+  let tmpDir: string;
+  let store: SessionStore;
+  let provider: MockProvider;
+  let registry: ToolRegistry;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "harness-memory-"));
+    store = new SessionStore(tmpDir);
+    provider = new MockProvider();
+    registry = new ToolRegistry();
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function create(opts: AgentHarnessOptions = {}): Promise<AgentHarness> {
+    return AgentHarness.create(provider, { store, registry, cwd: tmpDir, ...opts });
+  }
+
+  async function run(harness: AgentHarness, text: string): Promise<AgentEvent[]> {
+    const events: AgentEvent[] = [];
+    for await (const event of harness.run(text)) {
+      events.push(event);
+    }
+    return events;
+  }
+
+  const seen = (): string => provider.lastMessages.map((m) => m.content).join("\n");
+
+  it("injects relevant memories into the request", async () => {
+    const harness = await create();
+    await harness.memory!.store({
+      content: "The project uses vitest for tests and typecheck before commits.",
+      category: "project",
+      source: "seed",
+    });
+
+    const events = await run(harness, "how should I run the tests?");
+
+    expect(events.some((e) => e.type === "memory-recalled")).toBe(true);
+    expect(seen()).toContain("The project uses vitest");
+  });
+
+  it("does not inject memories that have nothing to do with the task", async () => {
+    const harness = await create();
+    await harness.memory!.store({
+      content: "The deployment pipeline runs on Fridays.",
+      category: "project",
+      source: "seed",
+    });
+
+    const events = await run(harness, "how should I run the tests?");
+
+    expect(events.some((e) => e.type === "memory-recalled")).toBe(false);
+    expect(seen()).not.toContain("deployment pipeline");
+  });
+
+  it("extracts durable statements from a run and persists them", async () => {
+    const harness = await create();
+    const events = await run(harness, "Remember that we deploy on Fridays.");
+
+    const stored = events.find((e) => e.type === "memory-stored");
+    expect(stored).toHaveProperty("count", 1);
+
+    const memories = await harness.memory!.list();
+    expect(memories.length).toBe(1);
+    expect(memories[0]?.content).toContain("deploy on Fridays");
+    expect(memories[0]?.source).toBe(`session:${harness.id}`);
+  });
+
+  it("ignores ordinary requests instead of filling the store", async () => {
+    const harness = await create();
+    await run(harness, "please look at src/agent/types.ts and tell me what it does");
+
+    expect(await harness.memory!.list()).toEqual([]);
+  });
+
+  it("never persists a secret offered as a memory", async () => {
+    const harness = await create();
+    const events = await run(
+      harness,
+      "Remember that the deploy token is ghp_" + "abcdefghijklmnopqrstuvwxyz1234",
+    );
+
+    const stored = events.find((e) => e.type === "memory-stored");
+    expect(stored).toHaveProperty("count", 0);
+    expect(await harness.memory!.list()).toEqual([]);
+  });
+
+  it("survives a restart: a later session recalls an earlier one's memory", async () => {
+    const memoryStore = new LocalMemoryStore(join(tmpDir, ".memory", "memories.jsonl"));
+
+    const first = await create({ memoryStore });
+    await run(first, "Remember that we deploy on Fridays.");
+
+    const second = await create({ memoryStore });
+    const events = await run(second, "when do we deploy?");
+
+    expect(events.some((e) => e.type === "memory-recalled")).toBe(true);
+    expect(seen()).toContain("deploy on Fridays");
+  });
+
+  it("keeps memory when the session is replaced", async () => {
+    const harness = await create();
+    await harness.memory!.store({
+      content: "Sessions are append-only JSONL.",
+      category: "architecture",
+      source: "seed",
+    });
+
+    await harness.newSession();
+
+    // A fresh Session, the same durable knowledge.
+    expect(await harness.memory!.list()).toHaveLength(1);
+  });
+
+  it("accepts an injected MemoryManager without touching the default store", async () => {
+    const injected = await MemoryManager.create({
+      store: new LocalMemoryStore(join(tmpDir, "injected", "memories.jsonl")),
+    });
+    const harness = await create({ memory: injected });
+    expect(harness.memory).toBe(injected);
   });
 });

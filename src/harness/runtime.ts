@@ -51,8 +51,10 @@ export class AgentRuntime {
       let llmError: Error | undefined;
 
       try {
+        // The ContextManager decides what the model sees — the runtime never
+        // assembles context itself.
         for await (const event of this.#env.provider.stream(
-          this.#env.context.trimForRequest(fullHistory),
+          this.#env.context.buildContext(fullHistory),
           { signal, tools: this.#env.registry.specs() },
         )) {
           if (event.type === "text-delta") {

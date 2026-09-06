@@ -1,4 +1,5 @@
 import type { AssistantMessage, ChatMessage } from "../agent/types.js";
+import type { ContextSummary } from "../context/summary.js";
 
 export type AgentEvent =
   | { type: "user-message"; message: Extract<ChatMessage, { role: "user" }> }
@@ -16,4 +17,10 @@ export type AgentEvent =
   | { type: "llm-completed"; turn: number }
   | { type: "tool-requested"; callId: string; toolName: string }
   | { type: "tool-failed"; callId: string; toolName: string; error: string }
-  | { type: "skill-activated"; name: string };
+  | { type: "skill-activated"; name: string }
+  /** Memories retrieved for this run and handed to the ContextManager. */
+  | { type: "memory-recalled"; count: number }
+  /** Candidate memories extracted from this run and persisted. */
+  | { type: "memory-stored"; count: number }
+  /** The conversation outgrew its budget and was folded into a summary. */
+  | { type: "context-compacted"; coveredMessages: number };

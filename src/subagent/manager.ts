@@ -14,6 +14,12 @@ import type { SubAgentContext, SubAgentEvent, SubAgentResult, SubAgentSpec } fro
 /** The delegation tool is never handed to a Sub-Agent (recursion guard). */
 export const DELEGATE_TOOL_NAME = "delegate_to_agent";
 
+/**
+ * Orchestration sits at the same level as delegation, so it is likewise
+ * withheld from children — a sub-agent must not fan out its own plan.
+ */
+export const ORCHESTRATE_TOOL_NAME = "orchestrate_tasks";
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TURNS = 10;
 
@@ -135,8 +141,8 @@ export class SubAgentManager {
     // Tools: a filtered view of the parent registry. Never the delegate tool.
     const childRegistry = new ToolRegistry();
     for (const name of spec.tools ?? role.tools) {
-      if (name === DELEGATE_TOOL_NAME) {
-        errors.push(`${DELEGATE_TOOL_NAME} is not available to sub-agents`);
+      if (name === DELEGATE_TOOL_NAME || name === ORCHESTRATE_TOOL_NAME) {
+        errors.push(`${name} is not available to sub-agents`);
         continue;
       }
       const tool = this.#registry.get(name);

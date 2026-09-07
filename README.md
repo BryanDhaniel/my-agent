@@ -8,7 +8,7 @@ A terminal coding agent built from scratch — an LLM that can read, create, edi
 - **Six core tools** — `read_file`, `write_file`, `edit_file`, `run_bash`, `glob`, `grep` (`src/agent/tools/`)
 - **Permission Gate** — every mutating tool call is prompted: `y` once, `n` no, `a` always for this session; `--yolo` skips prompts entirely
 - **Four providers, one interface** — OpenAI, Anthropic, Google Gemini and Zhipu GLM behind a normalized streaming API (`src/providers/`)
-- **Sub-Agents** — the main agent delegates self-contained tasks via `delegate_to_agent`; each child runs the same loop with its own context, tool allowlist and optionally its own model (`src/subagent/`)
+- **Sub-Agents and orchestration** — the main agent delegates a single task via `delegate_to_agent`, or runs a DAG of tasks in parallel via `orchestrate_tasks`; each child runs the same loop with its own context, tool allowlist and optionally its own model (`src/subagent/`, `src/orchestration/`)
 - **JSONL sessions** — full transcripts under `~/.my-agent/sessions/`, resumable with `--continue` / `--session <id>`
 - **Context manager** — token-budgeted requests that evict whole Turn Groups so Tool Results never separate from their Tool Calls
 - **Ink TUI** — streamed tokens, live tool activity, permission prompts, markdown-lite rendering, terminal-native styling: monochrome with a single cyan accent
@@ -222,6 +222,64 @@ never takes the parent down.
 - Nested delegation is disabled by default (`maxSubAgentDepth = 1`).
 - Sub-Agents do not write long-term memory.
 
+## Task Orchestration
+
+`orchestrate_tasks` runs a **DAG of tasks** as Sub-Agents. Independent tasks
+execute in parallel; tasks with dependencies wait for them.
+
+```text
+             ┌── Task A ──┐
+             │            │
+Main Agent ──┼── Task B ──┼──→ Task D ──→ Aggregated Result
+             │            │
+             └── Task C ──┘
+```
+
+The orchestrator owns *only* orchestration — validation, readiness,
+concurrency, retries, cancellation and aggregation. Every task is executed
+through the same `SubAgentManager`, so provider creation, context building,
+tool execution, permissions and timeouts all have exactly one implementation.
+
+```json
+{
+  "tasks": [
+    { "id": "auth",   "task": "Analyze authentication",        "role": "security-reviewer" },
+    { "id": "deps",   "task": "Analyze dependencies",          "role": "security-reviewer" },
+    { "id": "review", "task": "Consolidate the findings",      "role": "reviewer", "dependencies": ["auth", "deps"] }
+  ],
+  "maxConcurrency": 3
+}
+```
+
+### Semantics
+
+| Concern        | Behaviour                                                                 |
+|----------------|---------------------------------------------------------------------------|
+| Validation     | Plan checked before anything runs: duplicate ids, unknown/self deps, cycles |
+| Concurrency    | `maxConcurrency` (default 3, hard cap 8); never unbounded                  |
+| Dependencies   | A task starts only once every dependency has *completed*                   |
+| Failure        | `continue` (default) keeps independent tasks running; `fail-fast` stops     |
+| Broken deps    | Dependent task is **skipped**, with the reason recorded                     |
+| Retries        | `maxRetries` for transient failures only (rate limit, timeout, 5xx); never for permission or config errors. Exponential backoff, capped at 8s |
+| Timeouts       | Plan timeout wraps per-task timeouts; expiry stops scheduling and cancels   |
+| Cancellation   | One `AbortSignal` chain: caller → orchestrator → SubAgentManager → child    |
+| Aggregation    | Concise per-task digest (status + one-line summary); no raw transcripts     |
+
+### Isolation
+
+Each task is a separate Sub-Agent with its own context. A dependent task
+receives only **selected** results from its dependencies (summaries,
+findings, changed files) — never their transcripts, and never its siblings'
+context. `orchestrate_tasks` and `delegate_to_agent` are both withheld from
+children, so a sub-agent cannot fan out its own plan.
+
+### Current limitations
+
+- In-process only; no distributed workers or external queues.
+- Results are aggregated structurally — there is no "aggregator agent".
+- Provider-level capacity limits (per-provider concurrency) are not yet
+  modelled; only the global `maxConcurrency` applies.
+
 ## Verification
 
 ```bash
@@ -271,6 +329,10 @@ src/
 │   ├── manager.ts       SubAgentManager: lifecycle, limits, cancellation
 │   ├── roles.ts         role presets → system prompt + tool allowlist
 │   └── types.ts         SubAgentSpec / SubAgentResult / SubAgentContext
+├── orchestration/
+│   ├── orchestrator.ts  TaskOrchestrator: DAG scheduling, concurrency, retries
+│   ├── graph.ts         plan validation + cycle detection
+│   └── types.ts         AgentTask / TaskResult / OrchestrationResult
 ├── permissions/gate.ts  AskUserGate (session allowlist), AutoApproveGate
 ├── context/manager.ts   budget estimation + group-wise eviction
 ├── session/store.ts     append-only JSONL persistence

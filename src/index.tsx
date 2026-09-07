@@ -13,6 +13,8 @@ import { loadMcpConfig } from "./mcp/index.js";
 import { loadAllSkills, SkillRegistry } from "./skills/index.js";
 import { SubAgentManager } from "./subagent/manager.js";
 import { delegateToAgentTool } from "./agent/tools/delegate-to-agent.js";
+import { orchestrateTasksTool } from "./agent/tools/orchestrate-tasks.js";
+import { TaskOrchestrator } from "./orchestration/orchestrator.js";
 import { join } from "node:path";
 import { App } from "./ui/app.js";
 
@@ -64,6 +66,10 @@ async function boot(): Promise<void> {
     skills: skillRegistry,
   });
   registry.register(delegateToAgentTool(subagents));
+
+  // Parallel orchestration sits above the manager: each planned task is
+  // executed through the same SubAgentManager lifecycle.
+  registry.register(orchestrateTasksTool(new TaskOrchestrator({ manager: subagents })));
 
   const harness = await AgentHarness.create(provider, {
     store,

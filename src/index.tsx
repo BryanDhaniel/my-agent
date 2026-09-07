@@ -7,8 +7,7 @@ import { USAGE, parseArgs } from "./cli-args.js";
 import { ConfigError, loadConfig } from "./config.js";
 import { AskUserGate, AutoApproveGate, NOOP_UI_GATE } from "./permissions/gate.js";
 import type { PermissionGate, UiGate } from "./permissions/gate.js";
-import { AnthropicProvider } from "./providers/anthropic.js";
-import { OpenAIProvider } from "./providers/openai.js";
+import { createProvider } from "./providers/create-provider.js";
 import { SessionStore } from "./session/store.js";
 import { loadMcpConfig } from "./mcp/index.js";
 import { loadAllSkills, SkillRegistry } from "./skills/index.js";
@@ -24,10 +23,7 @@ async function boot(): Promise<void> {
   }
 
   const config = loadConfig(flags);
-  const provider =
-    config.provider === "openai"
-      ? new OpenAIProvider(config.apiKey, config.model)
-      : new AnthropicProvider(config.apiKey, config.model);
+  const provider = createProvider(config);
   const registry = defaultRegistry();
   const store = new SessionStore();
 

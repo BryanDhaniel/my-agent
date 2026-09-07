@@ -1,0 +1,158 @@
+import assert from "node:assert/strict";
+import { describe, it } from "vitest";
+import type { GoogleGenAI } from "@google/genai";
+import type OpenAI from "openai";
+import { GeminiProvider } from "./gemini.js";
+import { GLM_BASE_URL, GLMProvider } from "./glm.js";
+import type { StreamEvent } from "./provider.js";
+
+/**
+ * Streams driven by injected fake clients: these exercise translation and
+ * event shaping without network access or real API keys.
+ */
+
+async function collect(source: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
+  const events: StreamEvent[] = [];
+  for await (const event of source) events.push(event);
+  return events;
+}
+
+function fakeGemini(chunks: unknown[]): GoogleGenAI {
+  return {
+    models: {
+      generateContentStream: async () =>
+        (async function* () {
+          for (const chunk of chunks) yield chunk;
+        })(),
+    },
+  } as unknown as GoogleGenAI;
+}
+
+function fakeOpenAI(chunks: unknown[]): OpenAI {
+  return {
+    chat: {
+      completions: {
+        create: async () =>
+          (async function* () {
+            for (const chunk of chunks) yield chunk;
+          })(),
+      },
+    },
+  } as unknown as OpenAI;
+}
+
+describe("GeminiProvider streaming", () => {
+  it("turns streamed text into text-delta then done", async () => {
+    const provider = new GeminiProvider("k", "gemini-2.5-flash", fakeGemini([{ text: "Hel" }, { text: "lo" }]));
+    const events = await collect(provider.stream([{ role: "user", content: "hi" }]));
+
+    assert.deepEqual(events.slice(0, 2), [
+      { type: "text-delta", delta: "Hel" },
+      { type: "text-delta", delta: "lo" },
+    ]);
+    const done = events.at(-1);
+    assert.ok(done?.type === "done");
+    assert.equal(done.message.content, "Hello");
+  });
+
+  it("normalizes function calls into the common ToolCallRequest shape", async () => {
+    const provider = new GeminiProvider(
+      "k",
+      "gemini-2.5-flash",
+      fakeGemini([{ functionCalls: [{ name: "read_file", args: { path: "a.txt" } }] }]),
+    );
+    const events = await collect(provider.stream([{ role: "user", content: "read it" }]));
+    const done = events.at(-1);
+
+    assert.ok(done?.type === "done");
+    assert.deepEqual(done.message.toolCalls, [
+      { id: "read_file-0", name: "read_file", arguments: '{"path":"a.txt"}' },
+    ]);
+  });
+
+  it("emits an error event and no done when the API fails", async () => {
+    const provider = new GeminiProvider("k", "gemini-2.5-flash", {
+      models: {
+        generateContentStream: async () => {
+          throw new Error("quota exceeded");
+        },
+      },
+    } as unknown as GoogleGenAI);
+
+    const events = await collect(provider.stream([{ role: "user", content: "hi" }]));
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.type, "error");
+  });
+});
+
+describe("GLMProvider streaming", () => {
+  it("targets the Zhipu OpenAI-compatible endpoint", () => {
+    assert.equal(GLM_BASE_URL, "https://open.bigmodel.cn/api/paas/v4");
+  });
+
+  it("turns streamed text into text-delta then done", async () => {
+    const provider = new GLMProvider(
+      "k",
+      "glm-4.6",
+      undefined,
+      fakeOpenAI([{ choices: [{ delta: { content: "Hel" } }] }, { choices: [{ delta: { content: "lo" } }] }]),
+    );
+    const events = await collect(provider.stream([{ role: "user", content: "hi" }]));
+
+    assert.deepEqual(events.slice(0, 2), [
+      { type: "text-delta", delta: "Hel" },
+      { type: "text-delta", delta: "lo" },
+    ]);
+    const done = events.at(-1);
+    assert.ok(done?.type === "done");
+    assert.equal(done.message.content, "Hello");
+  });
+
+  it("normalizes tool calls into the common ToolCallRequest shape", async () => {
+    const provider = new GLMProvider(
+      "k",
+      "glm-4.6",
+      undefined,
+      fakeOpenAI([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    function: { name: "read_file", arguments: '{"path":"a.txt"}' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ]),
+    );
+    const events = await collect(provider.stream([{ role: "user", content: "read it" }]));
+    const done = events.at(-1);
+
+    assert.ok(done?.type === "done");
+    assert.deepEqual(done.message.toolCalls, [
+      { id: "call_1", name: "read_file", arguments: '{"path":"a.txt"}' },
+    ]);
+  });
+
+  it("emits an error event when the API fails", async () => {
+    const provider = new GLMProvider("k", "glm-4.6", undefined, {
+      chat: {
+        completions: {
+          create: async () => {
+            throw new Error("invalid api key");
+          },
+        },
+      },
+    } as unknown as OpenAI);
+
+    const events = await collect(provider.stream([{ role: "user", content: "hi" }]));
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.type, "error");
+  });
+});

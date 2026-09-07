@@ -12,7 +12,7 @@ const USAGE = `my-agent — a hand-rolled terminal coding agent
 Usage: my-agent [flags]
 
 Flags:
-  --provider <name>   LLM provider: openai | anthropic (default: openai)
+  --provider <name>   LLM provider: openai | anthropic | gemini | glm (default: openai)
   --model <id>        Model id override (default depends on provider)
   --continue          Resume the most recent session
   --session <id>      Resume a specific session by id

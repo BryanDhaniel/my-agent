@@ -62,8 +62,14 @@ export class OpenAIProvider implements Provider {
   readonly model: string;
   #client: OpenAI;
 
-  constructor(apiKey: string, model: string) {
-    this.#client = new OpenAI({ apiKey });
+  /**
+   * `baseURL` retargets the same OpenAI wire format at a compatible endpoint
+   * (used by GLM). `client` is injectable so tests can run without network.
+   */
+  constructor(apiKey: string, model: string, baseURL?: string, client?: OpenAI) {
+    this.#client =
+      client ??
+      new OpenAI({ apiKey, ...(baseURL !== undefined ? { baseURL } : {}) });
     this.model = model;
   }
 

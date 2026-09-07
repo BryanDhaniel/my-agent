@@ -280,6 +280,93 @@ children, so a sub-agent cannot fan out its own plan.
 - Provider-level capacity limits (per-provider concurrency) are not yet
   modelled; only the global `maxConcurrency` applies.
 
+## Observability & Reliability
+
+Every run is reconstructable from structured data — no console spelunking.
+
+```text
+run_01J...
+├── main-agent  (Run ID, provider, model, turns, duration)
+│   ├── llm.request.*   (duration, tokens)
+│   └── tool.*          (name, duration, permission result)
+│
+└── orchestration
+    ├── task A → sub-agent → llm + tools
+    └── task B → sub-agent → llm + tools
+```
+
+### Execution identity
+
+`src/observability/ids.ts` mints UUID-based IDs (`run_…`, `exec_…`, `span_…`) —
+never bare timestamps, which would collide between parallel sub-agents. Every
+event carries `runId`, `executionId` and `parentExecutionId`, so the tree
+stays queryable and OpenTelemetry can be added later without reworking it.
+
+### Events, logs, metrics, traces
+
+| Layer    | Where                          | Notes |
+|----------|--------------------------------|-------|
+| Events   | `observability/events.ts`, `bus.ts` | Dotted taxonomy (`llm.request.completed`, `task.retrying`, …). Emitted without knowledge of consumers |
+| Logging  | `observability/logger.ts`      | `debug`/`info`/`warn`/`error`; `--debug` for verbose, `--json`-style output available programmatically |
+| Metrics  | `observability/metrics.ts`     | In-process counters/observations/gauges: `agent_runs_*`, `llm_request_duration_ms`, `llm_input_tokens`, `tool_calls_*`, `subagent_*`, `tasks_*`, `retries_total`, `timeouts_total`, `cancellations_total` |
+| Tracing  | `observability/trace.ts`       | Spans with `spanId`/`parentSpanId` and **monotonic** timing, so a clock change cannot corrupt durations |
+
+The new taxonomy is **additive**: the TUI's existing hyphenated `AgentEvent`
+(`tool-start`, …) is untouched.
+
+### Error classification and retry
+
+`classifyError()` normalizes anything thrown into an `AgentError` with a
+`kind` (`rate_limit`, `network`, `model_unavailable`, `timeout`,
+`authentication`, `permission`, `invalid_request`, `tool`, `configuration`,
+`context`, `cancellation`, `internal`) and a retryability verdict — so retry
+decisions no longer depend on string matching at the call site.
+
+Retryable: rate limits, network errors, timeouts, temporary provider
+unavailability. Never retried: auth failures, invalid requests, permission
+denials, bad configuration.
+
+Backoff is bounded (`1s → 8s`) with jitter, lives in one place
+(`observability/retry.ts`), and the orchestrator now delegates to it — there
+is no second retry implementation. Waiting respects `AbortSignal`, so
+cancellation interrupts a retry immediately.
+
+### Timeout and cancellation precedence
+
+```text
+run timeout  →  task timeout  →  sub-agent timeout  →  llm request
+```
+
+One `AbortSignal` chain: caller → AgentHarness → TaskOrchestrator →
+SubAgentManager → child → provider/tools. Cancelling stops scheduling, aborts
+in-flight requests, marks pending work cancelled, and emits events.
+
+### Tokens and cost
+
+`TokenUsage` normalizes vendor usage into one shape. **Pricing is not
+invented**: the default pricing table is empty, so cost is reported as
+`unknown` rather than guessed. Register real pricing to get numbers:
+
+```ts
+pricing.register("gpt-4o", { inputPerMTok: 5, outputPerMTok: 15, currency: "USD" });
+```
+
+### Security
+
+Logging is safe by default. Forbidden keys (`apiKey`, `authorization`,
+`token`, `password`, …) are replaced with `[redacted]`, and every other string
+passes through the existing `redactSecrets` from `src/memory/sanitize.ts` —
+the same sanitizer that guards memory writes. Tool output and prompts are
+never logged wholesale.
+
+### Deferred
+
+- **Circuit breaker** — not implemented. The current failure surface is a
+  single process with per-request retries; a breaker would add state and
+  failure modes without clear benefit here. The provider seam makes it
+  straightforward to add if provider-level failure isolation is needed.
+- External metrics/tracing backends, persistent observability storage.
+
 ## Verification
 
 ```bash

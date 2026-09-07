@@ -4,6 +4,7 @@ export interface CliFlags {
   sessionId?: string;
   continueLast: boolean;
   yolo: boolean;
+  debug: boolean;
   help: boolean;
 }
 
@@ -17,6 +18,7 @@ Flags:
   --continue          Resume the most recent session
   --session <id>      Resume a specific session by id
   --yolo              Auto-approve mutating tools (no permission prompts)
+  --debug              Verbose execution logs (run ids, timings, retries)
   --help              Show this help
 `;
 
@@ -24,6 +26,7 @@ export function parseArgs(argv: string[]): CliFlags {
   const flags: CliFlags = {
     continueLast: false,
     yolo: false,
+    debug: false,
     help: false,
   };
 
@@ -53,6 +56,9 @@ export function parseArgs(argv: string[]): CliFlags {
         break;
       case "--yolo":
         flags.yolo = true;
+        break;
+      case "--debug":
+        flags.debug = true;
         break;
       case "--help":
       case "-h":

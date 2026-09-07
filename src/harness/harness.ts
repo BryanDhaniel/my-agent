@@ -19,6 +19,8 @@ import type { AgentEvent } from "./events.js";
 import { AgentRuntime } from "./runtime.js";
 import { McpManager, type McpConfig } from "../mcp/index.js";
 import { SkillRegistry, SkillResolver, SkillResolverError } from "../skills/index.js";
+import type { Observability } from "../observability/index.js";
+import { METRIC, startTimer } from "../observability/index.js";
 import {
   LocalMemoryStore,
   MemoryManager,
@@ -91,6 +93,7 @@ export class AgentHarness {
   #skills: SkillRegistry;
   #skillResolver: SkillResolver;
   #memory?: MemoryManager;
+  #observability?: Observability;
   readonly cwd: string;
 
   private constructor(
@@ -209,6 +212,14 @@ export class AgentHarness {
     return harness;
   }
 
+  /**
+   * Attach an observability sink. Optional — the harness runs identically
+   * without one, so observability is never a hard dependency of execution.
+   */
+  setObservability(observability: Observability): void {
+    this.#observability = observability;
+  }
+
   get id(): string {
     return this.#meta.id;
   }
@@ -292,6 +303,24 @@ export class AgentHarness {
   }
 
   async *run(text: string, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
+    const obs = this.#observability;
+    const runContext = obs?.newRun();
+    const runSpan =
+      runContext !== undefined ? obs?.span({ context: runContext, name: "run" }) : undefined;
+    const runElapsed = runContext !== undefined ? startTimer() : undefined;
+    if (obs !== undefined && runContext !== undefined) {
+      obs.metrics.increment(METRIC.agentRunsTotal);
+      obs.emit({
+        type: "run.started",
+        context: runContext,
+        metadata: {
+          sessionId: this.#meta.id,
+          provider: this.#meta.provider,
+          model: this.#meta.model,
+        },
+      });
+    }
+
     this.#state = startRun(this.#state);
     yield { type: "agent-started", sessionId: this.#meta.id };
 
@@ -383,6 +412,15 @@ export class AgentHarness {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.#state = failRun(this.#state, errorMsg);
+      if (obs !== undefined && runContext !== undefined) {
+        obs.metrics.increment(METRIC.agentRunsFailed);
+        runSpan?.end("failed", { error: errorMsg });
+        obs.emit({
+          type: "run.failed",
+          context: runContext,
+          metadata: { error: errorMsg, durationMs: Math.round(runElapsed?.() ?? 0) },
+        });
+      }
       yield { type: "agent-failed", error: errorMsg };
       return;
     }
@@ -405,13 +443,43 @@ export class AgentHarness {
 
     if (outcome.status === "cancelled") {
       this.#state = cancelRun(this.#state);
+      if (obs !== undefined && runContext !== undefined) {
+        obs.metrics.increment(METRIC.agentRunsCancelled);
+        obs.metrics.increment(METRIC.cancellationsTotal);
+        runSpan?.end("cancelled");
+        obs.emit({
+          type: "run.cancelled",
+          context: runContext,
+          metadata: { durationMs: Math.round(runElapsed?.() ?? 0) },
+        });
+      }
       yield { type: "agent-cancelled" };
     } else if (outcome.status === "failed") {
       const errorMsg = outcome.error?.message ?? "Run failed";
       this.#state = failRun(this.#state, errorMsg);
+      if (obs !== undefined && runContext !== undefined) {
+        obs.metrics.increment(METRIC.agentRunsFailed);
+        runSpan?.end("failed", { error: errorMsg });
+        obs.emit({
+          type: "run.failed",
+          context: runContext,
+          metadata: { error: errorMsg, durationMs: Math.round(runElapsed?.() ?? 0) },
+        });
+      }
       yield { type: "agent-failed", error: errorMsg };
     } else {
       this.#state = completeRun(this.#state, outcome.turns);
+      if (obs !== undefined && runContext !== undefined) {
+        const durationMs = Math.round(runElapsed?.() ?? 0);
+        obs.metrics.increment(METRIC.agentRunsSuccess);
+        obs.metrics.observe(METRIC.agentRunDurationMs, durationMs);
+        runSpan?.end("completed", { turns: outcome.turns });
+        obs.emit({
+          type: "run.completed",
+          context: runContext,
+          metadata: { turns: outcome.turns, durationMs },
+        });
+      }
       yield { type: "agent-completed", status: outcome.status, turns: outcome.turns };
     }
   }

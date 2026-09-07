@@ -11,6 +11,8 @@ import { createProvider } from "./providers/create-provider.js";
 import { SessionStore } from "./session/store.js";
 import { loadMcpConfig } from "./mcp/index.js";
 import { loadAllSkills, SkillRegistry } from "./skills/index.js";
+import { SubAgentManager } from "./subagent/manager.js";
+import { delegateToAgentTool } from "./agent/tools/delegate-to-agent.js";
 import { join } from "node:path";
 import { App } from "./ui/app.js";
 
@@ -51,6 +53,17 @@ async function boot(): Promise<void> {
   if (skillRegistry.size > 0) {
     console.error(`skills: ${skillRegistry.size} loaded`);
   }
+
+  // Sub-agents reuse the parent's tools, permission gate and provider/model
+  // defaults; each child gets its own context and a filtered tool registry.
+  const subagents = new SubAgentManager({
+    parent: { provider: config.provider, model: config.model },
+    registry,
+    gate: permGate,
+    cwd,
+    skills: skillRegistry,
+  });
+  registry.register(delegateToAgentTool(subagents));
 
   const harness = await AgentHarness.create(provider, {
     store,

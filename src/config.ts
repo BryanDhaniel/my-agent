@@ -41,6 +41,14 @@ export function isProviderName(value: string): value is ProviderName {
   return (PROVIDER_NAMES as readonly string[]).includes(value);
 }
 
+/**
+ * Current key for a provider, read from the environment. Sub-agents use this
+ * to resolve a key for a provider other than the parent's.
+ */
+export function resolveApiKey(provider: ProviderName): string | undefined {
+  return process.env[API_KEY_ENV[provider]];
+}
+
 export class ConfigError extends Error {}
 
 /**

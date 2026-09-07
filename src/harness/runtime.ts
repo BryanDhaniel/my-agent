@@ -14,6 +14,8 @@ export interface RuntimeEnvironment {
   gate: PermissionGate;
   context: ContextManager;
   cwd: string;
+  /** Per-run Turn cap. Defaults to MAX_TURNS when omitted. */
+  maxTurns?: number;
 }
 
 export interface RuntimeOutcome {
@@ -37,10 +39,11 @@ export class AgentRuntime {
   ): AsyncGenerator<AgentEvent, RuntimeOutcome> {
     const additions: ChatMessage[] = [];
     const fullHistory = [...history];
+    const maxTurns = this.#env.maxTurns ?? MAX_TURNS;
     let turns = 0;
     let finalText = "";
 
-    for (; turns < MAX_TURNS; turns++) {
+    for (; turns < maxTurns; turns++) {
       if (signal?.aborted) {
         return { status: "cancelled", finalText, turns, additions };
       }
@@ -107,9 +110,9 @@ export class AgentRuntime {
       }
     }
 
-    const turnLimitError = new Error(`Agent Loop hit the ${MAX_TURNS}-Turn limit`);
+    const turnLimitError = new Error(`Agent Loop hit the ${maxTurns}-Turn limit`);
     yield { type: "error", error: turnLimitError };
-    return { status: "failed", finalText, turns: MAX_TURNS, additions, error: turnLimitError };
+    return { status: "failed", finalText, turns: maxTurns, additions, error: turnLimitError };
   }
 
   async *#executeCall(

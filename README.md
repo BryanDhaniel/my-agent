@@ -8,6 +8,7 @@ A terminal coding agent built from scratch — an LLM that can read, create, edi
 - **Six core tools** — `read_file`, `write_file`, `edit_file`, `run_bash`, `glob`, `grep` (`src/agent/tools/`)
 - **Permission Gate** — every mutating tool call is prompted: `y` once, `n` no, `a` always for this session; `--yolo` skips prompts entirely
 - **Four providers, one interface** — OpenAI, Anthropic, Google Gemini and Zhipu GLM behind a normalized streaming API (`src/providers/`)
+- **Sub-Agents** — the main agent delegates self-contained tasks via `delegate_to_agent`; each child runs the same loop with its own context, tool allowlist and optionally its own model (`src/subagent/`)
 - **JSONL sessions** — full transcripts under `~/.my-agent/sessions/`, resumable with `--continue` / `--session <id>`
 - **Context manager** — token-budgeted requests that evict whole Turn Groups so Tool Results never separate from their Tool Calls
 - **Ink TUI** — streamed tokens, live tool activity, permission prompts, markdown-lite rendering, terminal-native styling: monochrome with a single cyan accent
@@ -152,6 +153,75 @@ npx skills@latest add mattpocock/skills
 
 Or manually copy skill directories into `.agents/skills/`. The agent will discover them on startup.
 
+## Sub-Agents
+
+A Sub-Agent is an independent agent execution the parent delegates to. The
+parent decides *when* that is useful — delegation is an ordinary tool call:
+
+```text
+User → Main Agent → delegate_to_agent → SubAgentManager → Sub-Agent → Result
+```
+
+The parent receives a concise structured result (status, summary, tools used,
+files changed, errors) and never the child's transcript. Sub-Agents run the
+same `AgentRuntime` as the parent; nothing about the loop is duplicated.
+
+### Roles
+
+| Role                | Tools                                  | Purpose                     |
+|---------------------|----------------------------------------|-----------------------------|
+| `general`           | all six                                | default, full access        |
+| `researcher`        | `read_file`, `glob`, `grep`            | investigate, read-only      |
+| `coder`             | all six                                | implement changes           |
+| `reviewer`          | `read_file`, `glob`, `grep`            | review, read-only           |
+| `debugger`          | `read_file`, `glob`, `grep`, `run_bash`| diagnose                    |
+| `planner`           | `read_file`, `glob`, `grep`            | plan, read-only             |
+| `security-reviewer` | `read_file`, `glob`, `grep`            | security audit, read-only   |
+
+A role only selects system instructions, a tool allowlist and skills — it adds
+no branching behaviour.
+
+### Provider selection
+
+A Sub-Agent may use a different model from its parent:
+
+```json
+{
+  "task": "Audit the authentication flow for security issues",
+  "role": "security-reviewer",
+  "provider": "gemini",
+  "model": "gemini-2.5-pro"
+}
+```
+
+Omit `provider`/`model` and the child inherits the parent's. Resolution goes
+through the same `createProvider` factory, so there is no provider-specific
+logic in the manager.
+
+### Isolation and limits
+
+- **Context** — the child sees only the task plus what the parent explicitly
+  hands over (`relevantContext`, `files`, `constraints`). The parent
+  conversation is never copied in.
+- **Sessions** — children are not persisted, and their transcripts never merge
+  into the parent's session.
+- **Memory** — children do not write persistent memories.
+- **Permissions** — children use the parent's Permission Gate, so a mutating
+  call is still prompted; read-only roles cannot reach write tools at all.
+- **Limits** — `maxTurns` (default 10), `timeoutMs` (default 120s),
+  `maxSubAgentDepth` (default 1, so sub-agents cannot spawn further
+  sub-agents), plus parent cancellation via `AbortSignal`.
+
+A failed, timed-out or cancelled Sub-Agent returns a structured result; it
+never takes the parent down.
+
+### Current limitations
+
+- Sub-Agents run **one at a time**; the manager is shaped for parallel
+  execution later, but nothing runs concurrently yet.
+- Nested delegation is disabled by default (`maxSubAgentDepth = 1`).
+- Sub-Agents do not write long-term memory.
+
 ## Verification
 
 ```bash
@@ -197,6 +267,10 @@ src/
 │   ├── gemini.ts          @google/genai streaming
 │   ├── gemini-mapping.ts  systemInstruction, functionCall/Response, schema enums
 │   └── glm.ts             Zhipu GLM via its OpenAI-compatible endpoint
+├── subagent/
+│   ├── manager.ts       SubAgentManager: lifecycle, limits, cancellation
+│   ├── roles.ts         role presets → system prompt + tool allowlist
+│   └── types.ts         SubAgentSpec / SubAgentResult / SubAgentContext
 ├── permissions/gate.ts  AskUserGate (session allowlist), AutoApproveGate
 ├── context/manager.ts   budget estimation + group-wise eviction
 ├── session/store.ts     append-only JSONL persistence

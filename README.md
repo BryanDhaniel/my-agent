@@ -367,6 +367,139 @@ never logged wholesale.
   straightforward to add if provider-level failure isolation is needed.
 - External metrics/tracing backends, persistent observability storage.
 
+## Security
+
+The model is not trusted. It may *request* an operation; the security layer
+decides whether it happens. Every tool call — main agent, sub-agent, and MCP —
+is authorized by a single `SecurityManager` before the permission gate runs.
+
+> **What this is not.** This is an application-level policy boundary, not
+> OS-level isolation. A command that policy allows still runs as your user with
+> your privileges. It is not a container, sandbox, or VM. See "Limitations".
+
+### Modes
+
+`--security-mode <restricted|workspace|permissive>` (or `MY_AGENT_SECURITY_MODE`).
+Default: `workspace`.
+
+| Mode | Files | Shell | MCP | Notes |
+|---|---|---|---|---|
+| `restricted` | read/write in workspace | **no** `process.execute` | not granted | no shell at all |
+| `workspace` | read/write, delete gated | allowed, dangerous blocked | per-tool allowlist | normal coding-agent mode |
+| `permissive` | adds delete | adds network; dangerous still asks | per-tool allowlist | not "off" — see below |
+
+`permissive` removes friction, never the boundary. Audit logging, secret
+redaction, path normalization, resource limits, cancellation and timeouts all
+remain active. An unrecognised mode is a startup error, not a fallback.
+
+### Capabilities
+
+Authority is expressed as composable capabilities (`filesystem.read`,
+`filesystem.write`, `filesystem.delete`, `process.execute`, `process.network`,
+`environment.read`, `mcp.use`, `agent.spawn`, …) rather than booleans.
+
+A child receives the **intersection** of what it asks for and what its parent
+holds. Requesting something the parent lacks is ineffective and is recorded as
+a `security.policy_violation`. `agent.escalate` is never granted at any mode,
+and there is no `disable()` / `allowAll()` / `bypass()` API.
+
+### Filesystem boundary
+
+Resolution order: normalize → resolve → check containment → resolve symlinks →
+check containment again → sensitive-file policy → capability check.
+
+- Containment uses `path.relative`, never a string prefix (`/project` must not
+  contain `/project-secret`).
+- Blocks: `../` traversal, absolute outside paths, other drives, UNC paths,
+  encoded traversal (`%2e%2e%2f`), null bytes.
+- Symlinks and junctions are resolved and re-checked; one that escapes the
+  workspace is refused. A link that stays inside is harmless and allowed.
+- Sensitive paths (`.env`, `*.pem`, `id_rsa`, `service-account.json`, `.npmrc`,
+  `.aws/credentials`, `secrets.*`, …) are denied for read, and denied for write.
+- `.git` internals are readable (git needs them) but not writable via tools.
+
+The workspace root's own symlink resolution is cached and treated as a valid
+root. Without that, a root behind a link (OneDrive, macOS `/tmp`, a junctioned
+checkout) would make every path look like an escape and deny the whole project.
+
+### Command policy
+
+The whole command is analyzed, not just its first token — `echo ok && rm -rf /`
+inherits `rm`'s classification, not `echo`'s. Chaining (`;`, `&&`, `||`, `|`),
+redirection, and substitution (`$(...)`, backticks) are split into segments and
+the verdict is the worst segment.
+
+| Class | Examples | Result |
+|---|---|---|
+| safe | `git status`, `npm test`, `ls`, `tsc --noEmit` | allowed |
+| caution | `npm install`, `git checkout`, unknown commands | allowed, confirmation |
+| dangerous | `rm`, `kill`, `chmod`, `git reset --hard` | refused |
+| forbidden | `rm -rf /`, `curl … \| sh`, `Invoke-Expression`, `git push --force` | refused |
+
+An unrecognised command is `caution`, never `safe`. The working directory must
+be inside the workspace.
+
+### Environment, secrets, and redaction
+
+Child processes receive a **filtered** environment: secret-shaped variables
+(`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `AWS_*`, `OPENAI_*`,
+`DATABASE_URL`, …) are removed, and remaining values pass through the existing
+`redactSecrets`. `process.env` is never handed to the model. Security reuses
+that one redactor — there is no second implementation.
+
+### MCP and sub-agents
+
+MCP tools are untrusted by default: an unknown tool is denied until
+allowlisted, and servers can be restricted. Sub-agents inherit a narrowed
+context; tasks may declare `capabilities`, which are still intersected with the
+orchestrator's. A blocked sub-agent operation is reported through the audit
+stream with the agent's label.
+
+### Permissions and `--yolo`
+
+Security runs **before** the permission gate, so a policy denial cannot be
+approved away — not by a user, and not by `--yolo`.
+
+```text
+security deny   > user approval
+```
+
+`--yolo` skips interactive confirmation for operations policy already allows.
+It does not relax path traversal protection, forbidden commands, secret
+protection, capability boundaries, or sandbox restrictions.
+
+### Resource limits
+
+Configured per policy: `maxCommandDurationMs`, `maxOutputBytes`,
+`maxFileReadBytes`, `maxFileWriteBytes`, `maxConcurrentProcesses`. Oversized
+output is truncated with an explicit `[… truncated at N chars]` marker and a
+`security.output_truncated` event. Timeouts reuse the existing reliability
+layer — no competing timers.
+
+### Audit
+
+Security decisions emit structured events on the existing bus
+(`security.allowed`, `security.denied`, `security.path_blocked`,
+`security.command_blocked`, `security.secret_access_blocked`,
+`security.policy_violation`, `security.output_truncated`), each carrying
+`runId`, `executionId`, `parentExecutionId`, decision, risk and reason — never
+raw secrets. Counters land in the same in-process metrics collector:
+`security_checks_total`, `security_denials_total`,
+`dangerous_commands_blocked_total`, `path_traversals_blocked_total`,
+`secret_access_blocked_total`.
+
+### Limitations
+
+- Application-level policy only. No kernel, container, or VM isolation.
+- Command classification is pattern-based and deliberately conservative; it
+  aims to prevent obvious bypasses and fail closed, not to parse shell
+  perfectly.
+- Secret detection is pattern-based and not exhaustive. The posture is
+  safe-by-default (withhold, don't guess), not perfect detection.
+- Real OS-level sandboxing (Docker, WASM, VM) is deferred. The extension point
+  is `SecurityManager`: a future `ExecutionSandbox` implementation would sit
+  behind the same authorization call, so tools would not change.
+
 ## Verification
 
 ```bash

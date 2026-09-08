@@ -20,6 +20,11 @@ export interface SubAgentSpec {
   skills?: string[];
   /** Tool names the child may use; defaults to the role's allowlist. */
   tools?: string[];
+  /**
+   * Capabilities the child needs. Anything the parent does not hold is
+   * dropped, so a child can never widen its own authority.
+   */
+  capabilities?: import("../security/types.js").Capability[];
   maxTurns?: number;
   maxTokens?: number;
   timeoutMs?: number;

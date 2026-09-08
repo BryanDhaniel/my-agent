@@ -4,6 +4,13 @@ import type { z } from "zod";
 export interface ToolContext {
   cwd: string;
   signal?: AbortSignal;
+  /**
+   * The security boundary that already authorized this call.
+   *
+   * Tools use it to read resource limits and to build a filtered environment;
+   * they never use it to re-litigate the decision the runtime already made.
+   */
+  security?: import("../security/manager.js").SecurityManager;
 }
 
 export interface ToolOutput {

@@ -4,6 +4,7 @@ import type { ToolRegistry } from "../agent/registry.js";
 import type { PermissionGate } from "../permissions/gate.js";
 import type { ContextManager } from "../context/manager.js";
 import type { AgentEvent } from "./events.js";
+import type { SecurityManager } from "../security/manager.js";
 
 const MAX_TURNS = 25;
 const MAX_TOOL_RESULT_CHARS = 8_000;
@@ -16,6 +17,8 @@ export interface RuntimeEnvironment {
   cwd: string;
   /** Per-run Turn cap. Defaults to MAX_TURNS when omitted. */
   maxTurns?: number;
+  /** When present, every tool call is authorized here before execution. */
+  security?: SecurityManager;
 }
 
 export interface RuntimeOutcome {
@@ -135,6 +138,19 @@ export class AgentRuntime {
         output = `Error: ${parsed.error}`;
         yield { type: "tool-failed", callId: id, toolName: name, error: output };
       } else {
+        // Security decides before the permission gate: a policy denial cannot
+        // be overridden by user approval or --yolo.
+        const security = this.#env.security;
+        if (security !== undefined) {
+          const decision = await security.checkTool(name, argsJson, this.#env.cwd);
+          if (!decision.allowed) {
+            const reason = `Blocked by security policy: ${decision.reason}`;
+            yield { type: "tool-denied", callId: id, toolName: name, reason: decision.reason };
+            yield { type: "tool-result", callId: id, toolName: name, output: reason };
+            return { role: "tool", toolCallId: id, content: reason };
+          }
+        }
+
         const ruleKey = tool.ruleKey !== undefined ? tool.ruleKey(parsed.data) : undefined;
         let decision: Awaited<ReturnType<PermissionGate["check"]>> = { allowed: true };
 
@@ -154,7 +170,10 @@ export class AgentRuntime {
           try {
             const result = await this.#env.registry.invoke(name, argsJson, {
               cwd: this.#env.cwd,
-              signal,
+              ...(signal !== undefined ? { signal } : {}),
+              ...(this.#env.security !== undefined
+                ? { security: this.#env.security }
+                : {}),
             });
             output =
               result.output.length > MAX_TOOL_RESULT_CHARS

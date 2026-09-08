@@ -21,6 +21,7 @@ import { McpManager, type McpConfig } from "../mcp/index.js";
 import { SkillRegistry, SkillResolver, SkillResolverError } from "../skills/index.js";
 import type { Observability } from "../observability/index.js";
 import { METRIC, startTimer } from "../observability/index.js";
+import type { SecurityManager } from "../security/manager.js";
 import {
   LocalMemoryStore,
   MemoryManager,
@@ -78,6 +79,8 @@ export interface AgentHarnessOptions {
   memory?: MemoryManager;
   /** Backing store for the default MemoryManager. Ignored when `memory` is set. */
   memoryStore?: MemoryStore;
+  /** Security boundary every tool call is authorized against. */
+  security?: SecurityManager;
 }
 
 export class AgentHarness {
@@ -94,6 +97,7 @@ export class AgentHarness {
   #skillResolver: SkillResolver;
   #memory?: MemoryManager;
   #observability?: Observability;
+  #security?: SecurityManager;
   readonly cwd: string;
 
   private constructor(
@@ -209,6 +213,7 @@ export class AgentHarness {
 
     harness.#mcpManager = mcpManager;
     harness.#memory = memory;
+    if (opts.security) harness.setSecurity(opts.security);
     return harness;
   }
 
@@ -218,6 +223,15 @@ export class AgentHarness {
    */
   setObservability(observability: Observability): void {
     this.#observability = observability;
+  }
+
+  /**
+   * Attach the security boundary. When set, every tool call is authorized
+   * here before the permission gate, so a policy denial cannot be approved
+   * away by the user or by --yolo.
+   */
+  setSecurity(security: SecurityManager): void {
+    this.#security = security;
   }
 
   get id(): string {
@@ -393,6 +407,7 @@ export class AgentHarness {
       gate: this.#gate,
       context: this.#context,
       cwd: this.cwd,
+      ...(this.#security !== undefined ? { security: this.#security } : {}),
     });
 
     const iterator = runtime.executeLoop(this.#history, signal);

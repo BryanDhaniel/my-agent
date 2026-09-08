@@ -349,6 +349,7 @@ function toSpec(task: AgentTask): SubAgentSpec {
     ...(task.model !== undefined ? { model: task.model } : {}),
     ...(task.skills !== undefined ? { skills: task.skills } : {}),
     ...(task.tools !== undefined ? { tools: task.tools } : {}),
+    ...(task.capabilities !== undefined ? { capabilities: task.capabilities } : {}),
     ...(task.maxTurns !== undefined ? { maxTurns: task.maxTurns } : {}),
     ...(task.maxTokens !== undefined ? { maxTokens: task.maxTokens } : {}),
     ...(task.timeoutMs !== undefined ? { timeoutMs: task.timeoutMs } : {}),

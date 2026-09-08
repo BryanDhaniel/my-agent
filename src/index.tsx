@@ -16,6 +16,7 @@ import { delegateToAgentTool } from "./agent/tools/delegate-to-agent.js";
 import { orchestrateTasksTool } from "./agent/tools/orchestrate-tasks.js";
 import { TaskOrchestrator } from "./orchestration/orchestrator.js";
 import { Observability } from "./observability/index.js";
+import { SecurityManager, defaultSecurityPolicy, resolveSecurityMode } from "./security/index.js";
 import type { ObservabilityEventType } from "./observability/events.js";
 import type { SubAgentEvent } from "./subagent/types.js";
 import type { OrchestrationEvent } from "./orchestration/types.js";
@@ -80,6 +81,19 @@ async function boot(): Promise<void> {
     observability.emit({ type: event.type as ObservabilityEventType, context });
   };
 
+  // The security boundary is created once here and handed down. Every tool
+  // call — main agent, sub-agent and MCP — is authorized against it; children
+  // get a narrowed context rather than this one.
+  const securityMode = resolveSecurityMode(flags.securityMode);
+  const security = new SecurityManager({
+    policy: defaultSecurityPolicy(cwd, securityMode),
+    observability,
+    executionId: `${runContext.executionId}:main`,
+    parentExecutionId: runContext.executionId,
+    runId: runContext.runId,
+    label: "main",
+  });
+
   // Sub-agents reuse the parent's tools, permission gate and provider/model
   // defaults; each child gets its own context and a filtered tool registry.
   const subagents = new SubAgentManager({
@@ -88,6 +102,7 @@ async function boot(): Promise<void> {
     gate: permGate,
     cwd,
     skills: skillRegistry,
+    security,
     onEvent: bridgeSubAgent,
   });
   registry.register(delegateToAgentTool(subagents));
@@ -104,6 +119,7 @@ async function boot(): Promise<void> {
     gate: permGate,
     mcpConfig,
     skills: skillRegistry,
+    security,
     ...flags,
   });
 

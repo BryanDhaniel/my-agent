@@ -24,9 +24,10 @@ export const readFileTool: ToolDefinition<z.infer<typeof inputSchema>> = {
     if (info.isDirectory()) {
       return { output: `Error: ${input.path} is a directory` };
     }
-    if (info.size > MAX_BYTES) {
+    const maxBytes = ctx.security?.resourceLimit("fileReadBytes") ?? MAX_BYTES;
+    if (info.size > maxBytes) {
       return {
-        output: `Error: ${input.path} is ${info.size} bytes; over the ${MAX_BYTES}-byte limit. Read a narrower file or use bash.`,
+        output: `Error: ${input.path} is ${info.size} bytes; over the ${maxBytes}-byte limit. Read a narrower file or use bash.`,
       };
     }
     const content = await readFile(resolved, "utf8");

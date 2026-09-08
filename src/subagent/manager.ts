@@ -9,6 +9,7 @@ import type { PermissionGate } from "../permissions/gate.js";
 import type { Provider } from "../providers/provider.js";
 import type { SkillRegistry } from "../skills/index.js";
 import { DEFAULT_ROLE, resolveRole, roleNames } from "./roles.js";
+import type { SecurityManager } from "../security/manager.js";
 import type { SubAgentContext, SubAgentEvent, SubAgentResult, SubAgentSpec } from "./types.js";
 
 /** The delegation tool is never handed to a Sub-Agent (recursion guard). */
@@ -39,6 +40,8 @@ export interface SubAgentManagerOptions {
   skills?: SkillRegistry;
   /** Main agent is depth 0; a sub-agent at depth >= this is refused. */
   maxSubAgentDepth?: number;
+  /** Parent security boundary; children receive a narrowed context. */
+  security?: SecurityManager;
   defaultTimeoutMs?: number;
   defaultMaxTurns?: number;
   onEvent?: (event: SubAgentEvent) => void;
@@ -79,6 +82,7 @@ export class SubAgentManager {
   readonly #defaultMaxTurns: number;
   readonly #onEvent: ((event: SubAgentEvent) => void) | undefined;
   readonly #providerFactory: NonNullable<SubAgentManagerOptions["providerFactory"]>;
+  readonly #security: SecurityManager | undefined;
 
   constructor(options: SubAgentManagerOptions) {
     this.#parent = options.parent;
@@ -90,6 +94,7 @@ export class SubAgentManager {
     this.#defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.#defaultMaxTurns = options.defaultMaxTurns ?? DEFAULT_MAX_TURNS;
     this.#onEvent = options.onEvent;
+    this.#security = options.security;
     this.#providerFactory =
       options.providerFactory ?? ((args) => createProvider(args));
   }
@@ -181,6 +186,13 @@ export class SubAgentManager {
     contextManager.setTaskContext(taskText);
 
     const provider = this.#providerFactory({ provider: providerName, model, apiKey });
+    // A child inherits a narrowed security context, never a wider one.
+    const childSecurity = this.#security?.child({
+      executionId: `subagent:${roleName}`,
+      ...(spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {}),
+      label: roleName,
+    });
+
     const runtime = new AgentRuntime({
       provider,
       registry: childRegistry,
@@ -188,6 +200,7 @@ export class SubAgentManager {
       context: contextManager,
       cwd: this.#cwd,
       maxTurns: spec.maxTurns ?? this.#defaultMaxTurns,
+      ...(childSecurity !== undefined ? { security: childSecurity } : {}),
     });
 
     this.#emit({ type: "subagent.created", role: roleName, provider: providerName, model });

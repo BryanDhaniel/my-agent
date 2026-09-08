@@ -47,6 +47,13 @@ export const METRIC = {
   retriesTotal: "retries_total",
   timeoutsTotal: "timeouts_total",
   cancellationsTotal: "cancellations_total",
+
+  securityChecksTotal: "security_checks_total",
+  securityDenialsTotal: "security_denials_total",
+  permissionRequestsTotal: "permission_requests_total",
+  dangerousCommandsBlockedTotal: "dangerous_commands_blocked_total",
+  pathTraversalsBlockedTotal: "path_traversals_blocked_total",
+  secretAccessBlockedTotal: "secret_access_blocked_total",
 } as const;
 
 export interface ObservationStats {

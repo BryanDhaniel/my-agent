@@ -17,9 +17,9 @@ const inputSchema = z.object({
     .describe(`Timeout in ms (default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS})`),
 });
 
-function truncate(label: string, text: string): string {
-  return text.length > MAX_OUTPUT_CHARS
-    ? `${text.slice(0, MAX_OUTPUT_CHARS)}\n[${label} truncated at ${MAX_OUTPUT_CHARS} chars]`
+function truncate(label: string, text: string, limit: number): string {
+  return text.length > limit
+    ? `${text.slice(0, limit)}\n[${label} truncated at ${limit} chars]`
     : text;
 }
 
@@ -36,15 +36,28 @@ export const runBashTool: ToolDefinition<z.infer<typeof inputSchema>> = {
     input: { command: string; timeoutMs?: number },
     ctx: ToolContext,
   ): Promise<ToolOutput> {
+    const security = ctx.security;
+
+    // The child process inherits a filtered environment, so secret-shaped
+    // variables never reach it and cannot be read into a tool result.
+    const env = security
+      ? { ...security.safeEnv(), NO_COLOR: "1" }
+      : { ...process.env, NO_COLOR: "1" };
+
+    // The policy cap wins over whatever the model asked for.
+    const requested = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = Math.min(requested, security?.resourceLimit("commandDurationMs") ?? requested);
+    const outputChars = security?.resourceLimit("outputBytes") ?? MAX_OUTPUT_CHARS;
+
     const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
       (resolve) => {
         exec(
           input.command,
           {
             cwd: ctx.cwd,
-            timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+            timeout: timeoutMs,
             maxBuffer: 10 * 1024 * 1024,
-            env: { ...process.env, NO_COLOR: "1" },
+            env,
           },
           (error, stdout, stderr) => {
             resolve({
@@ -57,9 +70,14 @@ export const runBashTool: ToolDefinition<z.infer<typeof inputSchema>> = {
       },
     );
 
+    const largest = Math.max(result.stdout.length, result.stderr.length);
+    if (largest > outputChars) {
+      security?.checkResourceLimit("outputBytes", largest);
+    }
+
     const parts = [`exit code: ${result.code ?? "signal"}`];
-    if (result.stdout.trim()) parts.push(`stdout:\n${truncate("stdout", result.stdout.trimEnd())}`);
-    if (result.stderr.trim()) parts.push(`stderr:\n${truncate("stderr", result.stderr.trimEnd())}`);
+    if (result.stdout.trim()) parts.push(`stdout:\n${truncate("stdout", result.stdout.trimEnd(), outputChars)}`);
+    if (result.stderr.trim()) parts.push(`stderr:\n${truncate("stderr", result.stderr.trimEnd(), outputChars)}`);
     return { output: parts.join("\n") };
   },
 };

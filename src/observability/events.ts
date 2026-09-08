@@ -72,6 +72,18 @@ export type ObservabilityEventType =
   | "memory.created"
   | "memory.updated"
   | "memory.rejected"
+  // security
+  | "security.check"
+  | "security.allowed"
+  | "security.denied"
+  | "security.permission_required"
+  | "security.capability_granted"
+  | "security.capability_denied"
+  | "security.path_blocked"
+  | "security.command_blocked"
+  | "security.secret_access_blocked"
+  | "security.output_truncated"
+  | "security.policy_violation"
   // reliability
   | "retry.scheduled"
   | "error.classified";

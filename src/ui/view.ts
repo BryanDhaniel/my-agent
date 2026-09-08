@@ -121,12 +121,19 @@ export function reduceChatEvent(
       }));
 
     case "tool-result":
-      return updateTool(state, event.callId, (entry) => ({
-        ...entry,
-        status: "done" as const,
-        detail: `${entry.detail} · ${firstLineSummary(event.output)}`,
-        output: event.output,
-      }));
+      return updateTool(state, event.callId, (entry) => {
+        // A blocked call still reports a result (the model must see why), but
+        // it must not be presented as a success.
+        const blocked = entry.status === "denied";
+        return {
+          ...entry,
+          status: blocked ? ("denied" as const) : ("done" as const),
+          detail: blocked
+            ? entry.detail
+            : `${entry.detail} · ${firstLineSummary(event.output)}`,
+          output: event.output,
+        };
+      });
 
     case "error":
       return {

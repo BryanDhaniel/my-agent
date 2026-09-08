@@ -5,6 +5,7 @@ export interface CliFlags {
   continueLast: boolean;
   yolo: boolean;
   debug: boolean;
+  securityMode?: string;
   help: boolean;
 }
 
@@ -17,8 +18,9 @@ Flags:
   --model <id>        Model id override (default depends on provider)
   --continue          Resume the most recent session
   --session <id>      Resume a specific session by id
-  --yolo              Auto-approve mutating tools (no permission prompts)
+  --yolo              Skip permission prompts (security policy still applies)
   --debug              Verbose execution logs (run ids, timings, retries)
+  --security-mode <m>  restricted | workspace | permissive (default: workspace)
   --help              Show this help
 `;
 
@@ -60,6 +62,12 @@ export function parseArgs(argv: string[]): CliFlags {
       case "--debug":
         flags.debug = true;
         break;
+      case "--security-mode": {
+        const value = argv[++i];
+        if (!value) throw new Error("--security-mode requires a value");
+        flags.securityMode = value;
+        break;
+      }
       case "--help":
       case "-h":
         flags.help = true;

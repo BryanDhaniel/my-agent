@@ -28,8 +28,15 @@ export const writeFileTool: ToolDefinition<z.infer<typeof inputSchema>> = {
     ctx: ToolContext,
   ): Promise<ToolOutput> {
     const resolved = path.resolve(ctx.cwd, input.path);
+    const bytes = Buffer.byteLength(input.content);
+    const maxBytes = ctx.security?.resourceLimit("fileWriteBytes");
+    if (maxBytes !== undefined && bytes > maxBytes) {
+      return {
+        output: `Error: refusing to write ${bytes} bytes; over the ${maxBytes}-byte limit. Split the write into smaller files.`,
+      };
+    }
     await mkdir(path.dirname(resolved), { recursive: true });
     await writeFile(resolved, input.content, "utf8");
-    return { output: `Wrote ${Buffer.byteLength(input.content)} bytes to ${input.path}` };
+    return { output: `Wrote ${bytes} bytes to ${input.path}` };
   },
 };

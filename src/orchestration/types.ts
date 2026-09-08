@@ -20,6 +20,11 @@ export interface AgentTask {
   model?: string;
   skills?: string[];
   tools?: string[];
+  /**
+   * Capabilities this task's sub-agent needs. Anything the orchestrator's
+   * security context lacks is dropped, so a task cannot widen its authority.
+   */
+  capabilities?: import("../security/types.js").Capability[];
   maxTurns?: number;
   maxTokens?: number;
   timeoutMs?: number;

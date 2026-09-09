@@ -73,7 +73,17 @@ export function orchestrateTasksTool(
             : {}),
           ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
         },
-        { signal: ctx.signal },
+        {
+          ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+          ...(ctx.modelSnapshot !== undefined
+            ? {
+                defaults: {
+                  provider: ctx.modelSnapshot.providerId,
+                  model: ctx.modelSnapshot.modelId,
+                },
+              }
+            : {}),
+        },
       );
 
       return { output: formatOrchestration(result) };

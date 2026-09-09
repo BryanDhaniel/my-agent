@@ -26,6 +26,12 @@ export interface TaskOrchestratorOptions {
 
 export interface RunPlanOptions {
   signal?: AbortSignal;
+  /**
+   * Provider/model every task inherits when it does not name its own — the
+   * parent run's snapshot, so a mid-run switch cannot retarget tasks already
+   * queued or running.
+   */
+  defaults?: { provider?: string; model?: string };
 }
 
 /**
@@ -133,7 +139,7 @@ export class TaskOrchestrator {
 
         let sub: SubAgentResult;
         try {
-          sub = await this.#manager.run(toSpec(task), {
+          sub = await this.#manager.run(toSpec(task, options.defaults), {
             context,
             signal: controller.signal,
             depth: 0,
@@ -341,12 +347,19 @@ function dependencyContext(
   };
 }
 
-function toSpec(task: AgentTask): SubAgentSpec {
+function toSpec(
+  task: AgentTask,
+  defaults?: { provider?: string; model?: string },
+): SubAgentSpec {
+  // A task's own choice wins; otherwise it inherits the run's snapshot.
+  const provider = task.provider ?? defaults?.provider;
+  const model = task.model ?? defaults?.model;
+
   return {
     task: task.task,
     ...(task.role !== undefined ? { role: task.role } : {}),
-    ...(task.provider !== undefined ? { provider: task.provider } : {}),
-    ...(task.model !== undefined ? { model: task.model } : {}),
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
     ...(task.skills !== undefined ? { skills: task.skills } : {}),
     ...(task.tools !== undefined ? { tools: task.tools } : {}),
     ...(task.capabilities !== undefined ? { capabilities: task.capabilities } : {}),

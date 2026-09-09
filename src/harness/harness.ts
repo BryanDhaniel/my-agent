@@ -234,6 +234,27 @@ export class AgentHarness {
     this.#security = security;
   }
 
+  /**
+   * Swap the provider for FUTURE runs only.
+   *
+   * An in-flight run captured its own snapshot when it started, so switching
+   * provider or model mid-run cannot rewrite the provider underneath a
+   * request, a sub-agent, a parallel task or a retry.
+   */
+  setProvider(provider: Provider): void {
+    this.#provider = provider;
+    this.#meta = {
+      ...this.#meta,
+      provider: provider.name,
+      model: provider.model,
+    };
+  }
+
+  /** Which provider and model the next run will use. */
+  get activeModel(): { provider: string; model: string } {
+    return { provider: this.#provider.name, model: this.#provider.model };
+  }
+
   get id(): string {
     return this.#meta.id;
   }
@@ -317,6 +338,9 @@ export class AgentHarness {
   }
 
   async *run(text: string, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
+    // Snapshot: everything below uses `provider`, never `this.#provider`, so a
+    // /provider or /model switch during this run cannot retarget it.
+    const provider = this.#provider;
     const obs = this.#observability;
     const runContext = obs?.newRun();
     const runSpan =
@@ -402,7 +426,7 @@ export class AgentHarness {
     }
 
     const runtime = new AgentRuntime({
-      provider: this.#provider,
+      provider,
       registry: this.#registry,
       gate: this.#gate,
       context: this.#context,

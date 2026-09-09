@@ -17,8 +17,23 @@ A terminal coding agent built from scratch — an LLM that can read, create, edi
 
 ```bash
 npm install
-echo 'OPENAI_API_KEY=sk-...' > .env.local   # or ANTHROPIC_API_KEY / GEMINI_API_KEY / GLM_API_KEY
 npm run dev
+```
+
+Then configure a provider from inside the app — no file editing needed:
+
+```text
+> /provider
+```
+
+Pick a provider, paste your key (input is masked), choose a model. It is stored
+under `~/.my-agent/` and reused on later runs. See
+[Provider & model setup](#provider--model-setup).
+
+The old environment-variable route still works if you prefer it:
+
+```bash
+export OPENAI_API_KEY=...   # or ANTHROPIC_API_KEY / GEMINI_API_KEY / GLM_API_KEY
 ```
 
 Useful flags:
@@ -65,6 +80,103 @@ mocked clients, so the suite needs no live API access.
 - Adding a fifth provider means adding one case to `createProvider`; the
   switch is exhaustive, so the compiler flags any missing branch. The Agent
   loop, Harness, TUI and tools require no changes.
+
+## Provider & model setup
+
+You never need to open `.env.local`. Everything below is done from the TUI.
+
+```text
+> /provider
+
+Select Provider
+  OpenAI
+  Gemini
+  GLM
+
+Gemini is not configured.
+
+Enter Gemini API key:
+> ••••••••••••
+
+✓ Gemini configured
+
+Select model — Gemini
+> Gemini 2.5 Flash
+  Gemini 2.5 Pro
+
+✓ Active: Gemini / gemini-2.5-flash
+```
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `/provider` | list providers with their configuration state |
+| `/provider <id>` | configure, or open the options menu if already configured |
+| `/provider remove <id>` | delete the stored credential |
+| `/model` | pick a model for the active provider |
+| `/model <id>` | switch directly |
+
+When a provider is already configured, `/provider <id>` offers: use current
+configuration, change API key, select model, remove configuration, cancel. It
+never re-asks for a key that already works. `Esc` cancels at any step; a
+cancelled setup changes nothing.
+
+These commands are handled locally. They are never sent to the model — verified
+by `npm run smoke:tui`.
+
+### Where things live
+
+```text
+~/.my-agent/
+    credentials.json   API keys — owner-only permissions where supported
+    config.json        active provider + model (ids only, safe to print)
+    sessions/          conversation history
+```
+
+Credentials, provider metadata and the runtime selection are three separate
+things:
+
+```text
+CredentialStore  →  ProviderRegistry  →  ProviderManager  →  ModelManager
+     (secret)         (what exists)        (is it ready)      (which model)
+```
+
+Sessions store only `provider` and `model`. They never contain an API key, and
+neither does memory, context, tool results or the observability stream.
+
+### Environment variables are legacy
+
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` and `GLM_API_KEY` still
+work as a bootstrap source: if no stored credential exists, the environment is
+consulted and the provider counts as configured. The application never writes
+to `.env.local`. `/provider <id>` can import an environment key into the store.
+
+The app now also boots with nothing configured, so `/provider` is reachable —
+previously a missing key aborted startup.
+
+### Runs use an immutable snapshot
+
+Each run captures its provider and model when it starts. Switching with
+`/provider` or `/model` mid-run does not retarget the request in flight; the
+change applies from the next run. Sub-agents and parallel tasks inherit that
+snapshot unless they explicitly name a provider or model, and a sub-agent that
+asks for an unconfigured provider is refused rather than prompted.
+
+### Security notes and limitations
+
+- Credentials live outside any workspace, so the filesystem boundary refuses
+  them without a special case, and `cat`/`type` on a path outside the workspace
+  is blocked.
+- The key input is masked and is never echoed, logged, or written to a session.
+- **Credential validation is local (non-empty) only.** There is no network
+  round-trip during setup, so a wrong key surfaces on the first request. The
+  validator is injectable if real validation is wanted later.
+- **This is not OS-level isolation.** Commands run as your user. The security
+  layer is an application-level policy boundary.
+- File permissions are enforced on POSIX-like systems. On Windows, `chmod` is
+  advisory and the file is created with default ACLs — the limitation is real
+  and not papered over.
 
 In the TUI: `/help` shows commands, `/exit` quits, `/skills` lists available skills.
 

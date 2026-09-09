@@ -1,7 +1,11 @@
 import { Box, Text, useApp, useInput } from "ink";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import TextInput from "ink-text-input";
 import type { AgentHarness } from "../harness/harness.js";
+import type { CredentialValidator, ProviderManager } from "../providers/manager.js";
+import type { SetupPrompts } from "../providers/setup-flow.js";
+import { ProviderSetupFlow } from "../providers/setup-flow.js";
+import { getProvider, listModels } from "../providers/registry.js";
 import type { PermissionRequest, UiGate } from "../permissions/gate.js";
 import type { LoadedSession, SessionStore } from "../session/store.js";
 import type { ChatMessage } from "../agent/types.js";
@@ -16,6 +20,9 @@ import {
   Paper,
   PaperText,
   PermissionBlock,
+  Picker,
+  SecretPrompt,
+  type PickerItem,
   RoleBlock,
   Spinner,
   StatusBar,
@@ -35,21 +42,41 @@ import {
   type PanelRow,
   type ViewEntry,
 } from "./view.js";
-import { MARK, SPACE } from "./theme.js";
+import { INK, MARK, SPACE } from "./theme.js";
 
 interface BrowserState {
   sessions: LoadedSession[];
   selected: number;
 }
 
+/**
+ * Provider/model setup is a small state machine. The sequence itself lives in
+ * ProviderSetupFlow — this only supplies the prompts and renders the steps.
+ */
+type FlowState =
+  | {
+      kind: "pick";
+      title: string;
+      items: PickerItem[];
+      selected: number;
+      onPick: (id: string) => void;
+    }
+  | { kind: "api-key"; providerId: string; label: string; value: string; error?: string }
+  | { kind: "confirm-remove"; providerId: string };
+
 export function App({
   service,
   gate,
   store,
+  providers,
+  validateCredential,
 }: {
   service: AgentHarness;
   gate: UiGate;
   store: SessionStore;
+  providers: ProviderManager;
+  /** Optional real validation during setup; absent means local checks only. */
+  validateCredential?: CredentialValidator;
 }): React.ReactElement {
   const { exit } = useApp();
   const [view, setView] = useState<ChatViewState>(initialViewState);
@@ -64,6 +91,214 @@ export function App({
   const suggestions = suggestCommands(value, service.skillCommands);
   const busy = view.busy;
   const currentRequest = pending[0];
+
+  const [flow, setFlow] = useState<FlowState | undefined>(undefined);
+  /** Resolver for whichever prompt the setup flow is waiting on. */
+  const pendingPrompt = useRef<((value: string | undefined) => void) | undefined>(
+    undefined,
+  );
+
+  const setupFlow = useMemo(
+    () =>
+      new ProviderSetupFlow({
+        providers,
+        ...(validateCredential !== undefined ? { validate: validateCredential } : {}),
+      }),
+    [providers, validateCredential],
+  );
+
+  const closeFlow = (): void => {
+    pendingPrompt.current = undefined;
+    setFlow(undefined);
+  };
+
+  /** Hand a value back to the setup flow, or cancel it with undefined. */
+  const resolvePrompt = (value: string | undefined): void => {
+    const resolve = pendingPrompt.current;
+    pendingPrompt.current = undefined;
+    setFlow(undefined);
+    resolve?.(value);
+  };
+
+  const activate = async (): Promise<void> => {
+    try {
+      service.setProvider(await providers.createProvider());
+    } catch (err) {
+      setView((s) => appendNotice(s, `✗ ${errText(err)}`));
+    }
+  };
+
+  const runSetup = (providerId: string, forceCredential = false): void => {
+    void (async () => {
+      const outcome = await setupFlow.run(
+        providerId,
+        prompts,
+        forceCredential ? { forceCredential: true } : {},
+      );
+      setFlow(undefined);
+
+      if (outcome.status === "active") {
+        const def = getProvider(outcome.providerId);
+        await activate();
+        setView((s) =>
+          appendNotice(s, `✓ Active: ${def?.name ?? outcome.providerId} / ${outcome.modelId}`),
+        );
+      } else if (outcome.status === "cancelled") {
+        setView((s) =>
+          appendNotice(
+            s,
+            outcome.stage === "credential"
+              ? "Provider setup cancelled."
+              : "Model selection cancelled — the provider stays configured.",
+          ),
+        );
+      } else {
+        setView((s) => appendNotice(s, `✗ ${outcome.error.message}`));
+      }
+    })();
+  };
+
+  const openProviders = (): void => {
+    void (async () => {
+      const statuses = await providers.listProviders();
+      setFlow({
+        kind: "pick",
+        title: "Select Provider",
+        items: statuses.map((s) => ({
+          id: s.id,
+          label: s.name,
+          detail: s.configured
+            ? s.active
+              ? "configured · active"
+              : "configured"
+            : "not configured",
+        })),
+        selected: Math.max(0, statuses.findIndex((s) => s.active)),
+        onPick: (id) => runSetup(id),
+      });
+    })();
+  };
+
+  const openModels = (modelId?: string): void => {
+    if (modelId !== undefined) {
+      void applyModel(modelId);
+      return;
+    }
+    const active = providers.getActive();
+    const models = listModels(active.providerId);
+    setFlow({
+      kind: "pick",
+      title: `Select model — ${getProvider(active.providerId)?.name ?? active.providerId}`,
+      items: models.map((m) => ({
+        id: m.id,
+        label: m.name,
+        detail: m.id === active.modelId ? "active" : m.id,
+      })),
+      selected: Math.max(0, models.findIndex((m) => m.id === active.modelId)),
+      onPick: (id) => {
+        // During setup the flow is waiting; otherwise this is a direct switch.
+        if (pendingPrompt.current !== undefined) {
+          resolvePrompt(id);
+          return;
+        }
+        closeFlow();
+        void applyModel(id);
+      },
+    });
+  };
+
+  const openProviderMenu = (providerId: string): void => {
+    const def = getProvider(providerId);
+    setFlow({
+      kind: "pick",
+      title: def?.name ?? providerId,
+      items: [
+        { id: "use", label: "Use current configuration" },
+        { id: "key", label: "Change API key" },
+        { id: "model", label: "Select model" },
+        { id: "remove", label: "Remove configuration" },
+        { id: "cancel", label: "Cancel" },
+      ],
+      selected: 0,
+      onPick: (id) => {
+        if (id === "use") {
+          void (async () => {
+            try {
+              await providers.setProvider(providerId);
+              await activate();
+              setFlow(undefined);
+              setView((s) => appendNotice(s, "✓ using current configuration"));
+            } catch (err) {
+              setFlow(undefined);
+              setView((s) => appendNotice(s, `✗ ${errText(err)}`));
+            }
+          })();
+          return;
+        }
+        if (id === "key") {
+          runSetup(providerId, true);
+          return;
+        }
+        if (id === "model") {
+          openModels();
+          return;
+        }
+        if (id === "remove") {
+          setFlow({ kind: "confirm-remove", providerId });
+          return;
+        }
+        closeFlow();
+      },
+    });
+  };
+
+  const applyModel = async (modelId: string): Promise<void> => {
+    try {
+      await providers.setModel(modelId);
+      await activate();
+      setView((s) => appendNotice(s, `✓ Model: ${modelId}`));
+    } catch (err) {
+      setView((s) => appendNotice(s, `✗ ${errText(err)}`));
+    }
+  };
+
+  const removeProvider = async (providerId: string): Promise<void> => {
+    try {
+      await providers.remove(providerId);
+      setView((s) => appendNotice(s, "credential removed"));
+      await activate();
+    } catch (err) {
+      setView((s) => appendNotice(s, `✗ ${errText(err)}`));
+    }
+  };
+
+  /** Prompts the setup flow uses. Each waits for a real user action. */
+  const prompts: SetupPrompts = {
+    askCredential: (provider) => {
+      setFlow({
+        kind: "api-key",
+        providerId: provider.id,
+        label: provider.credential.label,
+        value: "",
+      });
+      return new Promise<string | undefined>((resolve) => {
+        pendingPrompt.current = resolve;
+      });
+    },
+    selectModel: (provider, models) => {
+      const active = providers.getActive();
+      setFlow({
+        kind: "pick",
+        title: `Select model — ${provider.name}`,
+        items: models.map((m) => ({ id: m.id, label: m.name, detail: m.id })),
+        selected: Math.max(0, models.findIndex((m) => m.id === active.modelId)),
+        onPick: (id) => resolvePrompt(id),
+      });
+      return new Promise<string | undefined>((resolve) => {
+        pendingPrompt.current = resolve;
+      });
+    },
+  };
 
   // Reset the highlight synchronously with the edit. Doing this in an effect
   // let a late effect run clobber an arrow keypress made just after typing.
@@ -105,6 +340,59 @@ export function App({
         void deleteSession(browser);
       } else if (key.escape || input === "q") {
         setBrowser(undefined);
+      }
+      return;
+    }
+
+    // Provider/model setup takes over the keyboard while it is open.
+    if (flow !== undefined) {
+      if (key.escape) {
+        resolvePrompt(undefined);
+        return;
+      }
+
+      if (flow.kind === "api-key") {
+        if (key.return) {
+          if (flow.value.trim() === "") {
+            setFlow({ ...flow, error: "the API key cannot be empty" });
+            return;
+          }
+          const value = flow.value;
+          setFlow(undefined);
+          resolvePrompt(value);
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setFlow({ ...flow, value: flow.value.slice(0, -1), error: undefined });
+          return;
+        }
+        // Printable input only: arrows and control keys arrive with input "".
+        if (input !== "" && !key.return && !key.tab) {
+          setFlow({ ...flow, value: flow.value + input, error: undefined });
+        }
+        return;
+      }
+
+      if (flow.kind === "confirm-remove") {
+        if (input === "y") {
+          const id = flow.providerId;
+          setFlow(undefined);
+          void removeProvider(id);
+        } else if (input === "n" || input === "N" || key.return) {
+          closeFlow();
+        }
+        return;
+      }
+
+      const items = flow.items;
+      if (items.length === 0) return;
+      if (key.upArrow) {
+        setFlow({ ...flow, selected: (flow.selected - 1 + items.length) % items.length });
+      } else if (key.downArrow) {
+        setFlow({ ...flow, selected: (flow.selected + 1) % items.length });
+      } else if (key.return) {
+        const picked = items[flow.selected];
+        if (picked !== undefined) flow.onPick(picked.id);
       }
       return;
     }
@@ -213,7 +501,49 @@ export function App({
     setView((s) => appendPanel(appendPanel(s, "Commands", commandRows), "Keys", keyRows));
   };
 
+  const handleProviderCommand = (args: string[]): void => {
+    if (args.length === 0) {
+      openProviders();
+      return;
+    }
+
+    if (args[0] === "remove") {
+      const id = args[1];
+      if (id === undefined) {
+        setView((s) => appendNotice(s, "usage: /provider remove <provider>"));
+        return;
+      }
+      setFlow({ kind: "confirm-remove", providerId: id });
+      return;
+    }
+
+    const id = args[0] ?? "";
+    if (getProvider(id) === undefined) {
+      setView((s) => appendNotice(s, `unknown provider "${id}", try /provider`));
+      return;
+    }
+
+    void (async () => {
+      if (await providers.isConfigured(id)) {
+        openProviderMenu(id);
+      } else {
+        runSetup(id);
+      }
+    })();
+  };
+
   const executeCommand = (command: string): boolean => {
+    // Handled here, never forwarded to the model.
+    const [head, ...rest] = command.split(/\s+/);
+    if (head === "/provider") {
+      handleProviderCommand(rest);
+      return true;
+    }
+    if (head === "/model") {
+      openModels(rest[0]);
+      return true;
+    }
+
     switch (command) {
       case "/exit":
         abortRef.current?.abort();
@@ -363,9 +693,11 @@ export function App({
         />
       ) : null}
 
+      {flow !== undefined ? <FlowView flow={flow} /> : null}
+
       {currentRequest ? <PermissionBlock request={currentRequest} /> : null}
 
-      {!busy && !currentRequest && browser === undefined && (
+      {!busy && !currentRequest && browser === undefined && flow === undefined && (
         <>
           {suggestions.length > 0 && (
             <SuggestionList commands={suggestions} selected={selectedSuggestion} />
@@ -394,6 +726,38 @@ export function App({
       />
     </Paper>
   );
+}
+
+/**
+ * Provider/model setup UI. Presentation only — the sequence and the rules
+ * live in ProviderSetupFlow and ProviderManager.
+ */
+function FlowView({ flow }: { flow: FlowState }): React.ReactElement {
+  if (flow.kind === "api-key") {
+    return (
+      <SecretPrompt
+        label={flow.label}
+        length={flow.value.length}
+        {...(flow.error !== undefined ? { error: flow.error } : {})}
+      />
+    );
+  }
+
+  if (flow.kind === "confirm-remove") {
+    const name = getProvider(flow.providerId)?.name ?? flow.providerId;
+    return (
+      <Box flexDirection="column" marginLeft={SPACE.contentIndent} marginBottom={1}>
+        <Text {...INK.strong}>{`Remove ${name} configuration?`}</Text>
+        <Text {...INK.dim}>y remove · n cancel</Text>
+      </Box>
+    );
+  }
+
+  return <Picker title={flow.title} items={flow.items} selected={flow.selected} />;
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function EntryLine({

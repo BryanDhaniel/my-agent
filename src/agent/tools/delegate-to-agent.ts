@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ToolContext, ToolDefinition, ToolOutput } from "../tool.js";
 import { DELEGATE_TOOL_NAME, type SubAgentManager } from "../../subagent/manager.js";
 import { roleNames } from "../../subagent/roles.js";
+import { inheritSnapshot } from "../../providers/snapshot.js";
 import type { SubAgentResult } from "../../subagent/types.js";
 
 const inputSchema = z.object({
@@ -56,8 +57,11 @@ export function delegateToAgentTool(
         {
           task: input.task,
           ...(input.role !== undefined ? { role: input.role } : {}),
-          ...(input.provider !== undefined ? { provider: input.provider } : {}),
-          ...(input.model !== undefined ? { model: input.model } : {}),
+          // Inherit the parent's snapshot unless this call chose otherwise.
+          ...inheritSnapshot(ctx.modelSnapshot, {
+            ...(input.provider !== undefined ? { provider: input.provider } : {}),
+            ...(input.model !== undefined ? { model: input.model } : {}),
+          }),
           ...(input.skills !== undefined ? { skills: input.skills } : {}),
           ...(input.tools !== undefined ? { tools: input.tools } : {}),
           ...(input.maxTurns !== undefined ? { maxTurns: input.maxTurns } : {}),

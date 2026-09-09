@@ -17,6 +17,10 @@ import { orchestrateTasksTool } from "./agent/tools/orchestrate-tasks.js";
 import { TaskOrchestrator } from "./orchestration/orchestrator.js";
 import { Observability } from "./observability/index.js";
 import { SecurityManager, defaultSecurityPolicy, resolveSecurityMode } from "./security/index.js";
+import { FileCredentialStore, resolveCredential } from "./credentials/index.js";
+import { ProviderManager } from "./providers/manager.js";
+import { getProvider } from "./providers/registry.js";
+import type { Provider } from "./providers/provider.js";
 import type {
   ExecutionContext,
   ExecutionKind,
@@ -35,10 +39,29 @@ async function boot(): Promise<void> {
     return;
   }
 
-  const config = loadConfig(flags);
-  const provider = createProvider(config);
   const registry = defaultRegistry();
   const store = new SessionStore();
+
+  // Credentials live in their own store; provider/model selection in another
+  // file. Neither is the session, and neither is .env.local.
+  const observability = new Observability({ level: flags.debug ? "debug" : "info" });
+  const credentials = new FileCredentialStore();
+  const providerManager = new ProviderManager({ credentials, observability });
+  await providerManager.init();
+
+  const provider = await resolveStartupProvider(providerManager, flags);
+  console.error(`${provider.name} / ${provider.model}`);
+
+  /** Credential lookup for sub-agents: store first, environment as legacy. */
+  const resolveFor = async (id: string): Promise<string | undefined> => {
+    const envVar = getProvider(id)?.credential.environmentVariable;
+    const { value } = await resolveCredential({
+      store: credentials,
+      providerId: id,
+      ...(envVar !== undefined ? { environmentVariable: envVar } : {}),
+    });
+    return value;
+  };
 
   let uiGate: UiGate = NOOP_UI_GATE;
   let permGate: PermissionGate = new AutoApproveGate();
@@ -65,10 +88,6 @@ async function boot(): Promise<void> {
     console.error(`skills: ${skillRegistry.size} loaded`);
   }
 
-  // One observability sink for events, logs, metrics and traces. Sub-agent
-  // and orchestration lifecycles are bridged into it so the whole execution
-  // tree is reconstructable, not just the main agent's.
-  const observability = new Observability({ level: flags.debug ? "debug" : "info" });
   const runContext = observability.newRun();
 
   // One context per execution, not per event: a task or sub-agent keeps the
@@ -120,7 +139,10 @@ async function boot(): Promise<void> {
   // Sub-agents reuse the parent's tools, permission gate and provider/model
   // defaults; each child gets its own context and a filtered tool registry.
   const subagents = new SubAgentManager({
-    parent: { provider: config.provider, model: config.model },
+    parent: {
+      provider: providerManager.getActive().providerId,
+      model: providerManager.getActive().modelId,
+    },
     registry,
     gate: permGate,
     cwd,
@@ -131,6 +153,9 @@ async function boot(): Promise<void> {
     // Share one context between a child's security boundary and its trace.
     executionContextFactory: (_spec, role) =>
       contextFor(`subagent:${role}`, "sub-agent"),
+    // Children get credentials from the store, never from the LLM, and env
+    // stays as a legacy bootstrap.
+    resolveCredential: (providerId) => resolveFor(providerId),
   });
   registry.register(delegateToAgentTool(subagents));
 
@@ -175,7 +200,47 @@ async function boot(): Promise<void> {
     process.exit(0);
   });
 
-  render(<App service={harness as any} gate={uiGate} store={store} />);
+  render(
+    <App
+      service={harness as any}
+      gate={uiGate}
+      store={store}
+      providers={providerManager}
+    />,
+  );
+}
+
+/**
+ * Which provider the process starts with.
+ *
+ * Order: the stored selection, then a legacy environment key, then "start
+ * anyway with nothing configured" so /provider is reachable. The old
+ * behaviour was to refuse to boot without an env key, which made the
+ * interactive setup impossible to reach.
+ */
+async function resolveStartupProvider(
+  providers: ProviderManager,
+  flags: { provider?: string; model?: string },
+): Promise<Provider> {
+  const active = providers.getActive();
+
+  if (await providers.isConfigured(active.providerId)) {
+    return providers.createProvider();
+  }
+
+  try {
+    const config = loadConfig(flags);
+    await providers.setActive(config.provider, config.model);
+    return createProvider(config);
+  } catch {
+    // Nothing is configured. Boot with the default selection so the user can
+    // run /provider; the first request will fail until they do.
+    return createProvider({
+      provider: active.providerId,
+      model: active.modelId,
+      apiKey: "",
+    });
+  }
 }
 
 boot().catch((err) => {

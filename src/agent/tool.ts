@@ -11,6 +11,12 @@ export interface ToolContext {
    * they never use it to re-litigate the decision the runtime already made.
    */
   security?: import("../security/manager.js").SecurityManager;
+  /**
+   * Provider/model the current run started with. Delegation and orchestration
+   * inherit it unless told otherwise, so a mid-run switch cannot retarget
+   * work already in progress.
+   */
+  modelSnapshot?: import("../providers/snapshot.js").ModelSnapshot;
 }
 
 export interface ToolOutput {

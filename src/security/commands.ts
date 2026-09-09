@@ -1,3 +1,4 @@
+import path from "node:path";
 import { isPathInside } from "./paths.js";
 import type { CapabilitySet } from "./capabilities.js";
 import type { CommandSecurityPolicy, RiskLevel, SecurityDecision, SecurityMode } from "./types.js";
@@ -184,6 +185,38 @@ export function analyzeCommand(command: string): CommandAnalysis {
   };
 }
 
+/**
+ * Commands whose entire job is "print this file". For these, a path argument
+ * outside the workspace is treated as an escape rather than as ordinary
+ * shell work — `cat ~/.my-agent/credentials.json` must not be allowed just
+ * because `cat` is on the safe list.
+ */
+const FILE_READERS = new Set(["cat", "type", "head", "tail", "more", "less", "bat"]);
+
+/** First path argument that resolves outside every allowed root, if any. */
+export function outsideFileTarget(
+  command: string,
+  cwd: string,
+  allowedRoots: readonly string[],
+): string | undefined {
+  const segments = splitSegments(command);
+  for (const segment of segments) {
+    const executable = executableOf(segment);
+    if (!FILE_READERS.has(executable)) continue;
+
+    for (const token of segment.split(/\s+/).slice(1)) {
+      if (token === "" || token.startsWith("-")) continue;
+      if (!/[\\/]/.test(token)) continue; // relative names stay in the cwd
+      const resolved = path.resolve(cwd, token.replace(/^["']|["']$/g, ""));
+      const inside =
+        allowedRoots.some((root) => isPathInside(root, resolved)) ||
+        isPathInside(cwd, resolved);
+      if (!inside) return resolved;
+    }
+  }
+  return undefined;
+}
+
 export interface CommandDecision extends SecurityDecision {
   analysis: CommandAnalysis;
 }
@@ -225,6 +258,14 @@ export function checkCommandAccess(input: {
   const executable = analysis.executables[0] ?? "";
   if (executable !== "" && policy.deniedCommands.includes(executable)) {
     return deny(`command "${executable}" is denied by policy`, "critical");
+  }
+
+  const escapedTarget = outsideFileTarget(command, cwd, [
+    workspaceRoot,
+    ...policy.allowedWorkingDirectories,
+  ]);
+  if (escapedTarget !== undefined) {
+    return deny("command reads a file outside the workspace", "critical");
   }
 
   if (analysis.classification === "forbidden") {

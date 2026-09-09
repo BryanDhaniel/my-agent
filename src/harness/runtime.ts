@@ -5,6 +5,7 @@ import type { PermissionGate } from "../permissions/gate.js";
 import type { ContextManager } from "../context/manager.js";
 import type { AgentEvent } from "./events.js";
 import type { SecurityManager } from "../security/manager.js";
+import { snapshotOf } from "../providers/snapshot.js";
 import { METRIC, startTimer } from "../observability/index.js";
 import type {
   ExecutionContext,
@@ -240,6 +241,7 @@ export class AgentRuntime {
               ...(this.#env.security !== undefined
                 ? { security: this.#env.security }
                 : {}),
+              modelSnapshot: snapshotOf(this.#env.provider),
             });
             output =
               result.output.length > MAX_TOOL_RESULT_CHARS

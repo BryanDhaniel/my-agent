@@ -53,6 +53,12 @@ export interface SubAgentManagerOptions {
   executionContextFactory?: (spec: SubAgentSpec, role: string) => ExecutionContext;
   defaultTimeoutMs?: number;
   defaultMaxTurns?: number;
+  /**
+   * Credential lookup for a provider. Defaults to the legacy environment
+   * variable so existing setups keep working; the app injects a
+   * CredentialStore-backed resolver.
+   */
+  resolveCredential?: (providerId: string) => Promise<string | undefined>;
   onEvent?: (event: SubAgentEvent) => void;
   /**
    * Seam for tests: builds the child's Provider. Defaults to the normal
@@ -94,6 +100,9 @@ export class SubAgentManager {
   readonly #security: SecurityManager | undefined;
   readonly #observability: Observability | undefined;
   readonly #executionContextFactory: SubAgentManagerOptions["executionContextFactory"];
+  readonly #resolveCredential: NonNullable<
+    SubAgentManagerOptions["resolveCredential"]
+  >;
 
   constructor(options: SubAgentManagerOptions) {
     this.#parent = options.parent;
@@ -108,6 +117,7 @@ export class SubAgentManager {
     this.#security = options.security;
     this.#observability = options.observability;
     this.#executionContextFactory = options.executionContextFactory;
+    this.#resolveCredential = options.resolveCredential ?? ((id) => Promise.resolve(resolveApiKey(id as ProviderName)));
     this.#providerFactory =
       options.providerFactory ?? ((args) => createProvider(args));
   }
@@ -149,11 +159,11 @@ export class SubAgentManager {
       return refuse(`unknown provider "${spec.provider}" — expected openai, anthropic, gemini or glm`);
     }
     const model = spec.model ?? this.#parent.model;
-    const apiKey = resolveApiKey(providerName);
+    // Credentials come from the CredentialStore (env is only a legacy
+    // bootstrap). A sub-agent is never asked to supply one.
+    const apiKey = await this.#resolveCredential(providerName);
     if (apiKey === undefined || apiKey === "") {
-      return refuse(
-        `missing API key for ${providerName} — set ${apiKeyEnvVar(providerName)}`,
-      );
+      return refuse(`sub-agent cannot use ${providerName}: provider is not configured`);
     }
 
     // Tools: a filtered view of the parent registry. Never the delegate tool.

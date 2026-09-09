@@ -21,12 +21,22 @@ import { SkillRegistry } from "../src/skills/index.js";
 import { App } from "../src/ui/app.js";
 import type { Provider, StreamEvent } from "../src/providers/provider.js";
 import type { ChatMessage } from "../src/agent/types.js";
+import { MemoryCredentialStore } from "../src/credentials/index.js";
+import { ProviderManager } from "../src/providers/manager.js";
 
 class MockProvider implements Provider {
   readonly name = "mock";
   readonly model = "mock-model";
+  /** Everything the model was actually asked, so tests can prove a slash
+   *  command was handled locally instead of being forwarded. */
+  readonly seen: string[] = [];
   async *stream(messages: ChatMessage[]): AsyncGenerator<StreamEvent> {
-    void messages;
+    this.seen.push(
+      messages
+        .filter((m): m is Extract<ChatMessage, { role: "user" }> => m.role === "user")
+        .map((m) => m.content)
+        .join("\n"),
+    );
     yield { type: "text-delta", delta: "Noted. I will keep using pnpm." };
     yield {
       type: "done",
@@ -54,7 +64,8 @@ async function main(): Promise<void> {
     },
   ]);
 
-  const harness = await AgentHarness.create(new MockProvider(), {
+  const mock = new MockProvider();
+  const harness = await AgentHarness.create(mock, {
     store,
     registry: new ToolRegistry(),
     gate: new AutoApproveGate(),
@@ -85,8 +96,22 @@ async function main(): Promise<void> {
     out += c.toString("utf8");
   });
 
+  // Empty credential store and no environment, so provider status is
+  // deterministic regardless of the machine running the smoke check.
+  const providers = new ProviderManager({
+    credentials: new MemoryCredentialStore(),
+    persist: false,
+    env: {},
+  });
+  await providers.init();
+
   const inst = render(
-    <App service={harness as any} gate={NOOP_UI_GATE} store={store} />,
+    <App
+      service={harness as any}
+      gate={NOOP_UI_GATE}
+      store={store}
+      providers={providers}
+    />,
     { stdout: stdout as any, stdin, patchConsole: false, debug: true },
   );
 
@@ -103,6 +128,22 @@ async function main(): Promise<void> {
   stdin.write("\r");
   await sleep(900);
 
+  // /provider must open a local picker and never reach the model.
+  stdin.write("/provider");
+  await sleep(400);
+  stdin.write("\r");
+  await sleep(700);
+
+  // "/model" with nothing configured: still a local picker, still no LLM call.
+  stdin.write(String.fromCharCode(27)); // esc, close the provider picker
+  await sleep(300);
+  stdin.write("/model");
+  await sleep(400);
+  stdin.write("\r");
+  await sleep(700);
+  stdin.write(String.fromCharCode(27)); // esc, close the model picker
+  await sleep(300);
+
   // "/" alone, arrow down to a command, enter: must run the highlighted
   // command rather than sending "/" to the model. Suggestion order is
   // help, new, session, skills, exit, so one arrow down lands on /new.
@@ -112,6 +153,10 @@ async function main(): Promise<void> {
   await sleep(400);
   stdin.write("\r");
   await sleep(1000);
+
+  // Close whatever picker is open before unmounting.
+  stdin.write(String.fromCharCode(27));
+  await sleep(300);
 
   inst.unmount();
   await sleep(200);
@@ -133,6 +178,16 @@ async function main(): Promise<void> {
     ["session footer rendered", /session\s+\S+/.test(plain)],
     ["footer shows skill count", /\d+ skills/.test(plain)],
     ["slash + arrow + enter runs the command", /started new session/.test(plain)],
+    ["/provider opens a picker", /Select Provider/.test(plain)],
+    ["/provider lists providers", /OpenAI/.test(plain) && /Gemini/.test(plain) && /GLM/.test(plain)],
+    ["/provider shows configuration state", /not configured/.test(plain)],
+    ["/model opens a local picker", /Select model/.test(plain)],
+    [
+      "/provider never reached the model",
+      !mock.seen.some((text) => text.includes("/provider")),
+    ],
+    ["/model never reached the model", !mock.seen.some((text) => text.includes("/model"))],
+    ["/skills handled locally", !mock.seen.some((text) => text.includes("/skills"))],
   ];
 
   console.log("========== CHECKS ==========");

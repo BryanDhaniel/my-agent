@@ -257,6 +257,80 @@ export function SuggestionList({
   );
 }
 
+export interface PickerItem {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
+/** Interactive list used by /provider and /model. */
+export function Picker({
+  title,
+  items,
+  selected,
+  hint = "↑↓ select · enter confirm · esc cancel",
+}: {
+  title: string;
+  items: PickerItem[];
+  selected: number;
+  hint?: string;
+}): React.ReactElement {
+  const width = Math.max(0, ...items.map((item) => item.label.length));
+  return (
+    <Box flexDirection="column" marginLeft={SPACE.contentIndent} marginBottom={1}>
+      <Text {...INK.strong}>{title}</Text>
+      <Box height={1} />
+      {items.map((item, i) => {
+        const isActive = i === selected;
+        return (
+          <Text key={item.id}>
+            <Text {...(isActive ? INK.accent : INK.dim)}>
+              {isActive ? `${MARK.prompt} ` : "  "}
+              {item.label.padEnd(width + 2)}
+            </Text>
+            {item.detail !== undefined ? (
+              <Text {...(isActive ? INK.strong : INK.dim)}>{item.detail}</Text>
+            ) : null}
+          </Text>
+        );
+      })}
+      <Text {...INK.faint}> {hint}</Text>
+    </Box>
+  );
+}
+
+/**
+ * Masked credential entry.
+ *
+ * The value is rendered as dots only. It is never echoed, never written to
+ * the transcript, and never included in a notice.
+ */
+export function SecretPrompt({
+  label,
+  length,
+  error,
+  hint,
+}: {
+  label: string;
+  length: number;
+  error?: string;
+  hint?: string;
+}): React.ReactElement {
+  return (
+    <Box flexDirection="column" marginLeft={SPACE.contentIndent} marginBottom={1}>
+      <Text {...INK.strong}>{label}</Text>
+      <Box height={1} />
+      <Text>
+        <Text {...{ bold: true, color: "cyan" }}>{MARK.prompt} </Text>
+        <Text>{length > 0 ? "•".repeat(Math.min(length, 40)) : ""}</Text>
+        {length > 40 ? <Text {...INK.dim}>{` (+${length - 40})`}</Text> : null}
+      </Text>
+      {error !== undefined ? <Text {...INK.error}>{error}</Text> : null}
+      <Text {...INK.faint}> {hint ?? "enter submit · esc cancel"}</Text>
+    </Box>
+  );
+}
+
 /**
  * Answer to "show me the set of X" — /skills, /help, and friends.
  * Real rows with aligned columns, so command output is legible at a glance

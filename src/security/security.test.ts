@@ -172,6 +172,32 @@ describe("filesystem boundary", () => {
   });
 });
 
+describe("credentials are outside the agent's reach", () => {
+  it("denies reads of the credential store location", async () => {
+    // Credentials live under ~/.my-agent, which is outside any project
+    // workspace, so the path boundary refuses them without a special case.
+    const credentialsPath = path.join(os.homedir(), ".my-agent", "credentials.json");
+    const decision = await manager().checkFileAccess(credentialsPath, "read");
+    assert.equal(decision.allowed, false);
+    assert.match(decision.reason, /outside the configured workspace/);
+  });
+
+  it("denies reads of the active config location too", async () => {
+    const configPath = path.join(os.homedir(), ".my-agent", "config.json");
+    const decision = await manager().checkFileAccess(configPath, "read");
+    assert.equal(decision.allowed, false);
+  });
+
+  it("blocks a command that tries to read the credential file", () => {
+    const decision = manager().checkCommand(
+      `type ${path.join(os.homedir(), ".my-agent", "credentials.json")}`,
+    );
+    // Not just path denial: the workspace policy never allows reading outside
+    // it, whatever the command is.
+    assert.equal(decision.allowed, false);
+  });
+});
+
 describe("sensitive files", () => {
   it("recognises secret-shaped paths", () => {
     for (const target of [

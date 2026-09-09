@@ -31,6 +31,19 @@ export type SecurityAuditType =
   | "security.output_truncated"
   | "security.policy_violation";
 
+/** First-party file tools and the operation each argument path implies. */
+const FILE_TOOLS: Record<string, PathOperation> = {
+  read_file: "read",
+  write_file: "write",
+  edit_file: "write",
+};
+
+/** Tools that start another agent. Gated on agent.spawn, not on a path. */
+const AGENT_TOOLS = new Set(["delegate_to_agent", "orchestrate_tasks"]);
+
+/** Search tools: rooted at the cwd, so they take no path argument. */
+const CWD_ROOTED_TOOLS = new Set(["glob", "grep"]);
+
 export type ResourceLimitKind =
   | "outputBytes"
   | "fileReadBytes"
@@ -148,7 +161,13 @@ export class SecurityManager {
     return decision;
   }
 
-  /** Native + MCP tools funnel through here by name and arguments. */
+  /**
+   * Native + MCP tools funnel through here by name and arguments.
+   *
+   * First-party tools are matched explicitly. Anything else falls through to
+   * the MCP policy, which fails closed — an unrecognised tool is never
+   * silently allowed.
+   */
   async checkTool(
     toolName: string,
     argsJson: string,
@@ -156,20 +175,27 @@ export class SecurityManager {
   ): Promise<SecurityDecision> {
     const args = parseArgs(argsJson);
 
-    switch (toolName) {
-      case "read_file":
-        return this.checkFileAccess(pathArg(args), "read", cwd);
-      case "write_file":
-      case "edit_file":
-        return this.checkFileAccess(pathArg(args), "write", cwd);
-      case "glob":
-      case "grep":
-        return this.checkFileAccess(pathArg(args, "."), "read", cwd);
-      case "run_bash":
-        return this.checkCommand(commandArg(args), cwd);
-      default:
-        return this.checkMCPTool(undefined, toolName);
+    const fileOperation = FILE_TOOLS[toolName];
+    if (fileOperation !== undefined) {
+      return this.checkFileAccess(pathArg(args), fileOperation, cwd);
     }
+
+    if (AGENT_TOOLS.has(toolName)) {
+      return this.checkCapability("agent.spawn");
+    }
+
+    if (CWD_ROOTED_TOOLS.has(toolName)) {
+      // glob/grep take a pattern, not a path, and are rooted at the cwd —
+      // which is already inside the workspace. The relevant check is whether
+      // this context may read at all.
+      return this.checkCapability("filesystem.read");
+    }
+
+    if (toolName === "run_bash") {
+      return this.checkCommand(commandArg(args), cwd);
+    }
+
+    return this.checkMCPTool(undefined, toolName);
   }
 
   /** MCP tools are untrusted by default: allowed only when explicitly listed. */

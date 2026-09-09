@@ -10,6 +10,7 @@ import type { Provider } from "../providers/provider.js";
 import type { SkillRegistry } from "../skills/index.js";
 import { DEFAULT_ROLE, resolveRole, roleNames } from "./roles.js";
 import type { SecurityManager } from "../security/manager.js";
+import type { ExecutionContext, Observability } from "../observability/index.js";
 import type { SubAgentContext, SubAgentEvent, SubAgentResult, SubAgentSpec } from "./types.js";
 
 /** The delegation tool is never handed to a Sub-Agent (recursion guard). */
@@ -42,6 +43,14 @@ export interface SubAgentManagerOptions {
   maxSubAgentDepth?: number;
   /** Parent security boundary; children receive a narrowed context. */
   security?: SecurityManager;
+  /** Observability sink; children are traced when both this and a context are set. */
+  observability?: Observability;
+  /**
+   * Supplies the observability execution context for a child. When given, the
+   * child's security context and its trace share one id, so the run tree is
+   * reconstructable from either stream.
+   */
+  executionContextFactory?: (spec: SubAgentSpec, role: string) => ExecutionContext;
   defaultTimeoutMs?: number;
   defaultMaxTurns?: number;
   onEvent?: (event: SubAgentEvent) => void;
@@ -83,6 +92,8 @@ export class SubAgentManager {
   readonly #onEvent: ((event: SubAgentEvent) => void) | undefined;
   readonly #providerFactory: NonNullable<SubAgentManagerOptions["providerFactory"]>;
   readonly #security: SecurityManager | undefined;
+  readonly #observability: Observability | undefined;
+  readonly #executionContextFactory: SubAgentManagerOptions["executionContextFactory"];
 
   constructor(options: SubAgentManagerOptions) {
     this.#parent = options.parent;
@@ -95,6 +106,8 @@ export class SubAgentManager {
     this.#defaultMaxTurns = options.defaultMaxTurns ?? DEFAULT_MAX_TURNS;
     this.#onEvent = options.onEvent;
     this.#security = options.security;
+    this.#observability = options.observability;
+    this.#executionContextFactory = options.executionContextFactory;
     this.#providerFactory =
       options.providerFactory ?? ((args) => createProvider(args));
   }
@@ -186,9 +199,13 @@ export class SubAgentManager {
     contextManager.setTaskContext(taskText);
 
     const provider = this.#providerFactory({ provider: providerName, model, apiKey });
+    // One id per child, shared by its security context and its observability
+    // context, so the execution tree is reconstructable from either stream.
+    const childContext = this.#executionContextFactory?.(spec, roleName);
+    const childExecutionId = childContext?.executionId ?? `subagent:${roleName}`;
     // A child inherits a narrowed security context, never a wider one.
     const childSecurity = this.#security?.child({
-      executionId: `subagent:${roleName}`,
+      executionId: childExecutionId,
       ...(spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {}),
       label: roleName,
     });
@@ -201,6 +218,8 @@ export class SubAgentManager {
       cwd: this.#cwd,
       maxTurns: spec.maxTurns ?? this.#defaultMaxTurns,
       ...(childSecurity !== undefined ? { security: childSecurity } : {}),
+      ...(this.#observability !== undefined ? { observability: this.#observability } : {}),
+      ...(childContext !== undefined ? { executionContext: childContext } : {}),
     });
 
     this.#emit({ type: "subagent.created", role: roleName, provider: providerName, model });

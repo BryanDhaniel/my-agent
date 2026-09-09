@@ -17,7 +17,11 @@ import { orchestrateTasksTool } from "./agent/tools/orchestrate-tasks.js";
 import { TaskOrchestrator } from "./orchestration/orchestrator.js";
 import { Observability } from "./observability/index.js";
 import { SecurityManager, defaultSecurityPolicy, resolveSecurityMode } from "./security/index.js";
-import type { ObservabilityEventType } from "./observability/events.js";
+import type {
+  ExecutionContext,
+  ExecutionKind,
+  ObservabilityEventType,
+} from "./observability/events.js";
 import type { SubAgentEvent } from "./subagent/types.js";
 import type { OrchestrationEvent } from "./orchestration/types.js";
 import { join } from "node:path";
@@ -67,18 +71,37 @@ async function boot(): Promise<void> {
   const observability = new Observability({ level: flags.debug ? "debug" : "info" });
   const runContext = observability.newRun();
 
+  // One context per execution, not per event: a task or sub-agent keeps the
+  // same executionId for its whole lifetime so the tree can be rebuilt.
+  const childContexts = new Map<string, ExecutionContext>();
+  const contextFor = (key: string, kind: ExecutionKind): ExecutionContext => {
+    const existing = childContexts.get(key);
+    if (existing !== undefined) return existing;
+    const created = observability.child(runContext, kind);
+    childContexts.set(key, created);
+    return created;
+  };
+
   const bridgeSubAgent = (event: SubAgentEvent): void => {
     const type: ObservabilityEventType =
       event.type === "subagent.tool_call" ? "tool.started" : (event.type as ObservabilityEventType);
-    observability.emit({ type, context: observability.child(runContext, "sub-agent") });
+    const role = "role" in event ? event.role : "sub-agent";
+    observability.emit({
+      type,
+      context: contextFor(`subagent:${role}`, "sub-agent"),
+      metadata: { agent: role },
+    });
   };
 
   const bridgeOrchestration = (event: OrchestrationEvent): void => {
-    const context = observability.child(
-      runContext,
-      event.type.startsWith("task.") ? "task" : "main-agent",
-    );
-    observability.emit({ type: event.type as ObservabilityEventType, context });
+    const isTask = event.type.startsWith("task.");
+    const id = "taskId" in event ? event.taskId : undefined;
+    const key = isTask && id !== undefined ? `task:${id}` : "orchestration";
+    observability.emit({
+      type: event.type as ObservabilityEventType,
+      context: contextFor(key, isTask ? "task" : "main-agent"),
+      ...(id !== undefined ? { metadata: { taskId: id } } : {}),
+    });
   };
 
   // The security boundary is created once here and handed down. Every tool
@@ -104,6 +127,10 @@ async function boot(): Promise<void> {
     skills: skillRegistry,
     security,
     onEvent: bridgeSubAgent,
+    observability,
+    // Share one context between a child's security boundary and its trace.
+    executionContextFactory: (_spec, role) =>
+      contextFor(`subagent:${role}`, "sub-agent"),
   });
   registry.register(delegateToAgentTool(subagents));
 

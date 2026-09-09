@@ -5,6 +5,12 @@ import type { PermissionGate } from "../permissions/gate.js";
 import type { ContextManager } from "../context/manager.js";
 import type { AgentEvent } from "./events.js";
 import type { SecurityManager } from "../security/manager.js";
+import { METRIC, startTimer } from "../observability/index.js";
+import type {
+  ExecutionContext,
+  Observability,
+  ObservabilityEventType,
+} from "../observability/index.js";
 
 const MAX_TURNS = 25;
 const MAX_TOOL_RESULT_CHARS = 8_000;
@@ -19,6 +25,10 @@ export interface RuntimeEnvironment {
   maxTurns?: number;
   /** When present, every tool call is authorized here before execution. */
   security?: SecurityManager;
+  /** Observability sink for LLM and tool spans. Optional by design. */
+  observability?: Observability;
+  /** Execution context this runtime occupies in the run tree. */
+  executionContext?: ExecutionContext;
 }
 
 export interface RuntimeOutcome {
@@ -36,6 +46,14 @@ export class AgentRuntime {
     this.#env = env;
   }
 
+  /** Emit a structured event for this execution when a sink is attached. */
+  #trace(type: ObservabilityEventType, metadata?: Record<string, unknown>): void {
+    const obs = this.#env.observability;
+    const exec = this.#env.executionContext;
+    if (obs === undefined || exec === undefined) return;
+    obs.emit({ type, context: exec, ...(metadata !== undefined ? { metadata } : {}) });
+  }
+
   async *executeLoop(
     history: ChatMessage[],
     signal?: AbortSignal,
@@ -46,6 +64,11 @@ export class AgentRuntime {
     let turns = 0;
     let finalText = "";
 
+    const obs = this.#env.observability;
+    /** Structured trace for this execution; a no-op without a sink. */
+    const trace = (type: ObservabilityEventType, metadata?: Record<string, unknown>): void =>
+      this.#trace(type, metadata);
+
     for (; turns < maxTurns; turns++) {
       if (signal?.aborted) {
         return { status: "cancelled", finalText, turns, additions };
@@ -55,6 +78,20 @@ export class AgentRuntime {
 
       let assistantMessage: AssistantMessage | undefined;
       let llmError: Error | undefined;
+
+      const llmMeta = {
+        turn: turns,
+        provider: this.#env.provider.name,
+        model: this.#env.provider.model,
+      };
+      obs?.metrics.increment(METRIC.llmRequestsTotal);
+      trace("llm.request.started", llmMeta);
+      const llmContext = this.#env.executionContext;
+      const llmSpan =
+        obs !== undefined && llmContext !== undefined
+          ? obs.span({ context: llmContext, name: "llm.request", metadata: llmMeta })
+          : undefined;
+      const llmElapsed = startTimer();
 
       try {
         // The ContextManager decides what the model sees — the runtime never
@@ -76,6 +113,9 @@ export class AgentRuntime {
         }
       } catch (err) {
         if (signal?.aborted) {
+          llmSpan?.end("cancelled", llmMeta);
+          trace("llm.request.cancelled", llmMeta);
+          obs?.metrics.increment(METRIC.cancellationsTotal);
           return { status: "cancelled", finalText, turns, additions };
         }
         llmError = err instanceof Error ? err : new Error(String(err));
@@ -83,14 +123,24 @@ export class AgentRuntime {
       }
 
       if (llmError) {
+        llmSpan?.end("failed", { ...llmMeta, error: llmError.message });
+        trace("llm.request.failed", { ...llmMeta, error: llmError.message });
+        obs?.metrics.increment(METRIC.llmRequestsFailed);
         return { status: "failed", finalText, turns, additions, error: llmError };
       }
 
       if (!assistantMessage) {
         const error = new Error("Stream ended without producing an assistant message");
+        llmSpan?.end("failed", { ...llmMeta, error: error.message });
+        trace("llm.request.failed", { ...llmMeta, error: error.message });
+        obs?.metrics.increment(METRIC.llmRequestsFailed);
         yield { type: "error", error };
         return { status: "failed", finalText, turns, additions, error };
       }
+
+      llmSpan?.end("completed", llmMeta);
+      trace("llm.request.completed", { ...llmMeta, durationMs: Math.round(llmElapsed()) });
+      obs?.metrics.observe(METRIC.llmRequestDurationMs, Math.round(llmElapsed()));
 
       yield { type: "llm-completed", turn: turns };
       yield { type: "assistant-message", message: assistantMessage };
@@ -126,6 +176,19 @@ export class AgentRuntime {
     yield { type: "tool-requested", callId: id, toolName: name };
     yield { type: "tool-start", callId: id, toolName: name, argsJson };
 
+    const obs = this.#env.observability;
+    const exec = this.#env.executionContext;
+    const toolMeta = { toolName: name, callId: id };
+    obs?.metrics.increment(METRIC.toolCallsTotal);
+    this.#trace("tool.started", toolMeta);
+    const toolSpan =
+      obs !== undefined && exec !== undefined
+        ? obs.span({ context: exec, name: `tool:${name}`, metadata: toolMeta })
+        : undefined;
+    // Never the arguments themselves: they can contain file contents or
+    // commands that must not be copied into the trace.
+    const toolElapsed = startTimer();
+
     const tool = this.#env.registry.get(name);
     let output: string;
 
@@ -145,6 +208,9 @@ export class AgentRuntime {
           const decision = await security.checkTool(name, argsJson, this.#env.cwd);
           if (!decision.allowed) {
             const reason = `Blocked by security policy: ${decision.reason}`;
+            toolSpan?.end("failed", { ...toolMeta, reason: decision.reason });
+            this.#trace("tool.failed", { ...toolMeta, reason: decision.reason });
+            obs?.metrics.increment(METRIC.toolCallsFailed);
             yield { type: "tool-denied", callId: id, toolName: name, reason: decision.reason };
             yield { type: "tool-result", callId: id, toolName: name, output: reason };
             return { role: "tool", toolCallId: id, content: reason };
@@ -179,8 +245,16 @@ export class AgentRuntime {
               result.output.length > MAX_TOOL_RESULT_CHARS
                 ? `${result.output.slice(0, MAX_TOOL_RESULT_CHARS)}\n[output truncated at ${MAX_TOOL_RESULT_CHARS} chars]`
                 : result.output;
+
+            const durationMs = Math.round(toolElapsed());
+            toolSpan?.end("completed", { ...toolMeta, durationMs });
+            this.#trace("tool.completed", { ...toolMeta, durationMs });
+            obs?.metrics.observe(METRIC.toolCallDurationMs, durationMs);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
+            toolSpan?.end("failed", { ...toolMeta, error: errMsg });
+            this.#trace("tool.failed", { ...toolMeta, error: errMsg });
+            obs?.metrics.increment(METRIC.toolCallsFailed);
             output = `Error executing tool "${name}": ${errMsg}`;
             yield { type: "tool-failed", callId: id, toolName: name, error: errMsg };
           }

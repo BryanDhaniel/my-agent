@@ -532,6 +532,38 @@ describe("tool dispatch", () => {
     const decision = await manager().checkTool("some_mcp_tool", "{}");
     assert.equal(decision.allowed, false);
   });
+
+  it("allows agent delegation for the main agent", async () => {
+    // Regression: delegation tools are first-party, not MCP. Routing them to
+    // the MCP policy denied them and broke sub-agents entirely.
+    for (const toolName of ["delegate_to_agent", "orchestrate_tasks"]) {
+      const decision = await manager().checkTool(toolName, "{}");
+      assert.equal(decision.allowed, true, `${toolName} must be allowed`);
+      assert.equal(decision.capability, "agent.spawn");
+    }
+  });
+
+  it("refuses delegation to a child, which has no agent.spawn", async () => {
+    const child = manager().child({ executionId: "exec_child", label: "coder" });
+    for (const toolName of ["delegate_to_agent", "orchestrate_tasks"]) {
+      const decision = await child.checkTool(toolName, "{}");
+      assert.equal(decision.allowed, false, `${toolName} must be refused for a child`);
+    }
+  });
+
+  it("gates search tools on read access rather than a path", async () => {
+    for (const toolName of ["glob", "grep"]) {
+      const allowed = await manager().checkTool(toolName, JSON.stringify({ pattern: "*.ts" }));
+      assert.equal(allowed.allowed, true, toolName);
+
+      const denied = await manager({ capabilities: ["process.execute"] }).checkTool(
+        toolName,
+        JSON.stringify({ pattern: "*.ts" }),
+      );
+      assert.equal(denied.allowed, false, toolName);
+      assert.match(denied.reason, /filesystem\.read/);
+    }
+  });
 });
 
 describe("resource limits", () => {

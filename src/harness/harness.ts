@@ -408,6 +408,8 @@ export class AgentHarness {
       context: this.#context,
       cwd: this.cwd,
       ...(this.#security !== undefined ? { security: this.#security } : {}),
+      ...(this.#observability !== undefined ? { observability: this.#observability } : {}),
+      ...(runContext !== undefined ? { executionContext: runContext } : {}),
     });
 
     const iterator = runtime.executeLoop(this.#history, signal);

@@ -84,6 +84,16 @@ export type ObservabilityEventType =
   | "security.secret_access_blocked"
   | "security.output_truncated"
   | "security.policy_violation"
+  // provider / credential lifecycle. Metadata carries ids and timings only —
+  // never a key, token or authorization header.
+  | "provider.setup.started"
+  | "provider.setup.completed"
+  | "provider.setup.failed"
+  | "provider.selected"
+  | "provider.removed"
+  | "model.selected"
+  | "credential.store.failed"
+  | "credential.validation.failed"
   // reliability
   | "retry.scheduled"
   | "error.classified";

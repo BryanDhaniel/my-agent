@@ -15,7 +15,8 @@ export const PROVIDER_NAMES: readonly ProviderName[] = [
   "glm",
 ];
 
-const DEFAULT_MODELS: Record<ProviderName, string> = {
+/** Exported so the provider registry can reuse it instead of duplicating ids. */
+export const DEFAULT_MODELS: Record<ProviderName, string> = {
   openai: "gpt-4o-mini",
   anthropic: "claude-sonnet-4-5",
   gemini: "gemini-2.5-flash",
@@ -26,7 +27,8 @@ const DEFAULT_MODELS: Record<ProviderName, string> = {
  * Env var each provider reads its key from. Nothing here is a secret — the
  * values live in the environment (or .env.local), never in source.
  */
-const API_KEY_ENV: Record<ProviderName, string> = {
+/** Exported so the provider registry can reuse it as the legacy env source. */
+export const API_KEY_ENV: Record<ProviderName, string> = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   gemini: "GEMINI_API_KEY",

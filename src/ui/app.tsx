@@ -76,6 +76,19 @@ type FlowState =
  */
 const SUBMIT_DEDUPE_MS = 400;
 
+/**
+ * Sentinel for the welcome banner.
+ *
+ * It is the FIRST item of the transcript's <Static> list and is never removed,
+ * so Ink writes it exactly once. Keeping the header in the dynamic region
+ * instead meant Ink had to erase it the moment the first entry was committed;
+ * because <Static> grows in the same frame, the erase target shifted and the
+ * header came out chopped or doubled. <Static> is append-only (it renders
+ * `items.slice(index)`), so the banner must own a permanent first slot.
+ */
+const HEADER_ITEM = Symbol("session-header");
+type StaticItem = ViewEntry | typeof HEADER_ITEM;
+
 export function App({
   service,
   gate,
@@ -800,14 +813,38 @@ export function App({
       .slice(lastUserIndex + 1)
       .some((entry) => entry.kind === "message" && entry.role === "assistant");
 
+  // The welcome banner is the first, permanent static item (see HEADER_ITEM);
+  // the settled transcript follows it. <Static> is append-only, so the header
+  // slot must never be dropped once Ink has written it.
+  const staticItems: StaticItem[] = [HEADER_ITEM, ...settledEntries];
+
   return (
     <Paper>
-      <Static key={view.transcriptGen} items={settledEntries}>
-        {(entry, i) => (
-          <Box key={i} flexDirection="column" marginTop={SPACE.turnGap}>
-            <EntryLine entry={entry} verbose={verboseTool} />
-          </Box>
-        )}
+      <Static key={view.transcriptGen} items={staticItems}>
+        {(item, i) =>
+          item === HEADER_ITEM ? (
+            <SessionHeader
+              key="header"
+              brand="my-agent"
+              version={APP_VERSION}
+              model={`${service.meta.provider}/${service.meta.model}`}
+              cwd={service.cwd}
+              tips={[
+                "Ask for a change, or / for commands",
+                "/provider to pick a model",
+                "/skills to list what's loaded",
+              ]}
+              whatsNew={[
+                "Added /todo and /diff to demo screen grammar",
+                "Added effort chip and token counter to the prompt",
+              ]}
+            />
+          ) : (
+            <Box key={i} flexDirection="column" marginTop={SPACE.turnGap}>
+              <EntryLine entry={item} verbose={verboseTool} />
+            </Box>
+          )
+        }
       </Static>
 
       {trailingEntry !== undefined ? (
@@ -815,30 +852,6 @@ export function App({
           <EntryLine entry={trailingEntry} verbose={verboseTool} />
         </Box>
       ) : null}
-
-      {/*
-        Deliberately not gated on `busy`: the header used to vanish the instant
-        a turn started (before the first entry existed), so Ink erased it
-        mid-redraw and left a chopped frame. It now stays until there is real
-        transcript to show.
-      */}
-      {view.entries.length === 0 && browser === undefined && flow === undefined && !currentRequest && (
-        <SessionHeader
-          brand="my-agent"
-          version={APP_VERSION}
-          model={`${service.meta.provider}/${service.meta.model}`}
-          cwd={service.cwd}
-          tips={[
-            "Ask for a change, or / for commands",
-            "/provider to pick a model",
-            "/skills to list what's loaded",
-          ]}
-          whatsNew={[
-            "Added /todo and /diff to demo screen grammar",
-            "Added effort chip and token counter to the prompt",
-          ]}
-        />
-      )}
 
         {/*
           Deliberately no live streaming preview. The streamed text is drawn in

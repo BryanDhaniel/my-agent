@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { z } from "zod";
-import { AgentHarness } from "./harness.js";
+import { AgentHarness, buildSystemPrompt } from "./harness.js";
 import { AgentRuntime } from "./runtime.js";
 import { SessionStore } from "../session/store.js";
 import { ToolRegistry } from "../agent/registry.js";
@@ -598,5 +598,18 @@ describe("AgentHarness memory lifecycle", () => {
     });
     const harness = await create({ memory: injected });
     expect(harness.memory).toBe(injected);
+  });
+});
+
+describe("buildSystemPrompt", () => {
+  it("tells the model not to call tools for greetings or small talk", () => {
+    const prompt = buildSystemPrompt("/project", "src\npackage.json");
+    // Regression: a weak model greeted with "Hello" would spontaneously call
+    // run_bash. The prompt must explicitly forbid tools for small talk.
+    expect(prompt).toMatch(/greeting/i);
+    expect(prompt).toMatch(/without calling any tools|call no tools/i);
+    // And it must still be a coding-agent prompt with the project root.
+    expect(prompt).toContain("coding agent");
+    expect(prompt).toContain("Project root: /project");
   });
 });

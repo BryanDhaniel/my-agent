@@ -50,7 +50,8 @@ export function buildSystemPrompt(
   const parts = [
     "You are my-agent, a terminal coding agent working in the user's project directory.",
     "You can read, create, edit, search files and run shell commands via your tools.",
-    "Use tools whenever they help; prefer relative paths; be concise and direct.",
+    "Use tools when they help with the user's request; prefer relative paths; be concise and direct.",
+    "Only call a tool when the user actually asks for an action. For a greeting, thanks, or small talk, reply in one short sentence without calling any tools.",
     "Never repeat, restate, or echo back the user's message. Answer their request directly without greeting or preamble.",
     "",
     `Project root: ${cwd}`,

@@ -1,0 +1,11 @@
+{
+  "id": "refactor-deep-equal",
+  "category": "refactor",
+  "prompt": "The `deepEqual` function in src/compare.mjs only compares top-level values with `===`, so nested objects that are structurally equal but distinct references are reported as unequal. Refactor it to compare nested objects/arrays recursively by value. Run `node --test` to confirm.",
+  "fixture": "fixture",
+  "maxTurns": 16,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

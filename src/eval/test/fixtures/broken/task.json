@@ -1,0 +1,8 @@
+{
+  "id": "broken",
+  "category": "bug-fix",
+  "prompt": "The sum function has an off-by-one error; fix it so the tests pass.",
+  "fixture": "fixture",
+  "maxTurns": 6,
+  "validation": { "command": "node --test", "timeoutMs": 20000 }
+}

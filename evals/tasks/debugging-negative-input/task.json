@@ -1,0 +1,11 @@
+{
+  "id": "debugging-negative-input",
+  "category": "debugging",
+  "prompt": "The `safeSqrt` function in src/sqrt.mjs returns the string \"NaN\" for negative input instead of failing loudly. The test expects it to THROW an Error mentioning \"negative\" for negative numbers. Diagnose why the test fails and fix `safeSqrt` so it throws a clear Error. Run `node --test` to confirm.",
+  "fixture": "fixture",
+  "maxTurns": 12,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

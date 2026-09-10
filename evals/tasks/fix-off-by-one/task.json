@@ -1,0 +1,11 @@
+{
+  "id": "fix-off-by-one",
+  "category": "bug-fix",
+  "prompt": "The `sum` function in src/sum.mjs has an off-by-one error: it drops the last element of the array. Fix it so every element is included. Run `node --test` to verify your fix passes before finishing.",
+  "fixture": "fixture",
+  "maxTurns": 10,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

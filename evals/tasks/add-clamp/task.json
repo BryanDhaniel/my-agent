@@ -1,0 +1,11 @@
+{
+  "id": "add-clamp",
+  "category": "feature",
+  "prompt": "The math module src/mathx.mjs exports `add` and `subtract` but is missing a `clamp(value, min, max)` function that constrains a number to the inclusive range [min, max]. Add `clamp` so it passes the existing test. Run `node --test` to verify.",
+  "fixture": "fixture",
+  "maxTurns": 12,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "debugging-async-order",
+  "category": "debugging",
+  "prompt": "The `runTasks` function in src/pipeline.mjs runs the supplied async tasks but returns their results in the WRONG order (reversed). The test expects results in the same order the tasks were passed. Diagnose the ordering bug and fix it so results preserve input order. Run `node --test` to confirm.",
+  "fixture": "fixture",
+  "maxTurns": 12,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

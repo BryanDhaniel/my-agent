@@ -1,0 +1,11 @@
+{
+  "id": "fix-null-guard",
+  "category": "bug-fix",
+  "prompt": "The `formatName` function in src/format.mjs throws when its argument is null or undefined. Make it return an empty string instead so callers never crash. Run `node --test` to confirm the fix passes.",
+  "fixture": "fixture",
+  "maxTurns": 10,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "testing-extend-coverage",
+  "category": "testing",
+  "prompt": "The module src/stringutils.mjs exports `capitalize`, `truncate` and `repeat`, but tests only exist for `capitalize` (test/basic.test.mjs). Add a new test file at test/extra.test.mjs using node:test that covers `truncate` and `repeat`, including edge cases (empty string, over-long input, zero count). Run `node --test` to confirm everything passes.",
+  "fixture": "fixture",
+  "maxTurns": 14,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

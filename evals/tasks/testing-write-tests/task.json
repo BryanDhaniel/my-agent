@@ -1,0 +1,11 @@
+{
+  "id": "testing-write-tests",
+  "category": "testing",
+  "prompt": "The module src/calc.mjs exports `add`, `subtract` and `multiply`, but has no tests at all. Write a test suite at test/agent.test.mjs using node:test that covers all three functions (including edge cases like negatives and zero). Run `node --test` to confirm every test passes.",
+  "fixture": "fixture",
+  "maxTurns": 14,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

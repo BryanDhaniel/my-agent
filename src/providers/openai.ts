@@ -5,6 +5,7 @@ import type {
   ToolCallRequest,
 } from "../agent/types.js";
 import type { Provider, StreamEvent, StreamOptions } from "./provider.js";
+import type { TokenUsage } from "../observability/usage.js";
 
 function toOpenAiMessage(m: ChatMessage): OpenAI.Chat.Completions.ChatCompletionMessageParam {
   switch (m.role) {
@@ -97,6 +98,9 @@ export class OpenAIProvider implements Provider {
               }
             : {}),
           stream: true,
+          // Ask the API to include token usage in the final streamed chunk so
+          // evaluation can report authoritative counts instead of estimates.
+          stream_options: { include_usage: true },
         },
         { signal: options?.signal },
       );
@@ -107,6 +111,7 @@ export class OpenAIProvider implements Provider {
 
     let content = "";
     const toolCalls = new ToolCallAccumulator();
+    let usage: TokenUsage | undefined;
     try {
       for await (const chunk of completion) {
         const choice = chunk.choices[0];
@@ -117,6 +122,17 @@ export class OpenAIProvider implements Provider {
         }
         if (delta?.tool_calls) {
           toolCalls.add(delta.tool_calls);
+        }
+        const u = chunk.usage;
+        if (u != null) {
+          usage = {
+            inputTokens: u.prompt_tokens,
+            outputTokens: u.completion_tokens,
+            totalTokens: u.total_tokens,
+            ...(u.prompt_tokens_details?.cached_tokens !== undefined
+              ? { cachedInputTokens: u.prompt_tokens_details.cached_tokens }
+              : {}),
+          };
         }
       }
     } catch (error) {
@@ -129,6 +145,6 @@ export class OpenAIProvider implements Provider {
       content,
       toolCalls: toolCalls.finish(),
     };
-    yield { type: "done", message };
+    yield { type: "done", message, ...(usage !== undefined ? { usage } : {}) };
   }
 }

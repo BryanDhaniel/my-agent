@@ -106,6 +106,16 @@ export class AgentRuntime {
             yield event;
           } else if (event.type === "done") {
             assistantMessage = event.message;
+            // Authoritative token usage (when the provider exposes it) feeds
+            // observability so evaluation can report real counts, not estimates.
+            if (event.usage !== undefined) {
+              const runId = this.#env.executionContext?.runId;
+              if (runId !== undefined) {
+                this.#env.observability?.recordUsage(runId, event.usage, {
+                  model: this.#env.provider.model,
+                });
+              }
+            }
           } else if (event.type === "error") {
             llmError = event.error instanceof Error ? event.error : new Error(String(event.error));
             yield { type: "error", error: llmError };

@@ -16,6 +16,7 @@ import { delegateToAgentTool } from "./agent/tools/delegate-to-agent.js";
 import { orchestrateTasksTool } from "./agent/tools/orchestrate-tasks.js";
 import { TaskOrchestrator } from "./orchestration/orchestrator.js";
 import { Observability } from "./observability/index.js";
+import { runEvalCli } from "./eval/cli.js";
 import { SecurityManager, defaultSecurityPolicy, resolveSecurityMode } from "./security/index.js";
 import { FileCredentialStore, resolveCredential } from "./credentials/index.js";
 import { ProviderManager } from "./providers/manager.js";
@@ -32,7 +33,16 @@ import { join } from "node:path";
 import { App } from "./ui/app.js";
 
 async function boot(): Promise<void> {
-  const flags = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  // The evaluation CLI is a sibling entry point: it drives the real
+  // AgentHarness headlessly and never boots the TUI. Intercept before parseArgs,
+  // which rejects positional arguments.
+  if (argv[0] === "eval") {
+    const code = await runEvalCli(argv.slice(1));
+    process.exit(code);
+  }
+
+  const flags = parseArgs(argv);
 
   if (flags.help) {
     console.log(USAGE);

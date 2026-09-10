@@ -5,6 +5,7 @@ import {
 } from "@google/genai";
 import type { AssistantMessage, ChatMessage } from "../agent/types.js";
 import type { Provider, StreamEvent, StreamOptions } from "./provider.js";
+import type { TokenUsage } from "../observability/usage.js";
 import {
   GeminiCallAccumulator,
   toGeminiRequest,
@@ -57,6 +58,7 @@ export class GeminiProvider implements Provider {
 
     let content = "";
     const calls = new GeminiCallAccumulator();
+    let usage: TokenUsage | undefined;
 
     try {
       for await (const chunk of chunks) {
@@ -69,6 +71,14 @@ export class GeminiProvider implements Provider {
         if (functionCalls !== undefined && functionCalls.length > 0) {
           calls.add(functionCalls);
         }
+        const um = chunk.usageMetadata;
+        if (um !== undefined) {
+          usage = {
+            inputTokens: um.promptTokenCount,
+            outputTokens: um.candidatesTokenCount,
+            totalTokens: um.totalTokenCount,
+          };
+        }
       }
     } catch (error) {
       yield { type: "error", error };
@@ -80,7 +90,7 @@ export class GeminiProvider implements Provider {
       content,
       toolCalls: calls.finish(),
     };
-    yield { type: "done", message };
+    yield { type: "done", message, ...(usage !== undefined ? { usage } : {}) };
   }
 }
 

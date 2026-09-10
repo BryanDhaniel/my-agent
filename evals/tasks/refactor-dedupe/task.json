@@ -1,0 +1,11 @@
+{
+  "id": "refactor-dedupe",
+  "category": "refactor",
+  "prompt": "The `dedupe` function in src/collections.mjs only removes consecutive duplicates (it compares against the last pushed item). Refactor it to remove ALL duplicates regardless of position while preserving first-seen order, e.g. dedupe([1,1,2,2,3,1]) should be [1,2,3]. Prefer a Set-based implementation. Run `node --test` to confirm.",
+  "fixture": "fixture",
+  "maxTurns": 14,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

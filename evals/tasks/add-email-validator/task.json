@@ -1,0 +1,11 @@
+{
+  "id": "add-email-validator",
+  "category": "feature",
+  "prompt": "The validators module src/validators.mjs exports `isNonEmpty` but is missing an `isValidEmail(value)` function. Add `isValidEmail` that returns true for simple addresses like `a@b.com` and false otherwise (reject missing @, multiple @, or no domain). Make the existing test pass with `node --test`.",
+  "fixture": "fixture",
+  "maxTurns": 12,
+  "validation": {
+    "command": "node --test",
+    "timeoutMs": 30000
+  }
+}

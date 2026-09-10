@@ -1,0 +1,8 @@
+{
+  "id": "passing",
+  "category": "bug-fix",
+  "prompt": "The double function works already; confirm it behaves correctly. Run node --test to verify.",
+  "fixture": "fixture",
+  "maxTurns": 6,
+  "validation": { "command": "node --test", "timeoutMs": 20000 }
+}

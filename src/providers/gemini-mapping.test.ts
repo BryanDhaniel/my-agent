@@ -112,6 +112,34 @@ describe("toGeminiSchema", () => {
     assert.equal("$schema" in converted, false);
     assert.equal("additionalProperties" in converted, false);
   });
+
+  it("folds exclusiveMinimum/exclusiveMaximum into inclusive bounds (Gemini 400)", () => {
+    const converted = toGeminiSchema({
+      type: "object",
+      properties: {
+        count: { type: "number", exclusiveMinimum: 0, exclusiveMaximum: 10 },
+        // already-inclusive bound must win over the exclusive one
+        score: { type: "number", minimum: 0, exclusiveMinimum: -5 },
+      },
+    });
+    assert.equal("exclusiveMinimum" in converted, false);
+    assert.equal("exclusiveMaximum" in converted, false);
+    const props = converted["properties"] as Record<string, Record<string, unknown>>;
+    assert.equal(props["count"]?.["minimum"], 0);
+    assert.equal(props["count"]?.["maximum"], 10);
+    assert.equal(props["score"]?.["minimum"], 0);
+  });
+
+  it("drops $ref/$defs/$anchor that Gemini does not support", () => {
+    const converted = toGeminiSchema({
+      type: "object",
+      properties: { node: { $ref: "#/$defs/node", type: "object" } },
+      $defs: { node: { type: "object" } },
+    });
+    const props = converted["properties"] as Record<string, Record<string, unknown>>;
+    assert.equal("$ref" in (props["node"] ?? {}), false);
+    assert.equal("$defs" in converted, false);
+  });
 });
 
 describe("toGeminiTools", () => {

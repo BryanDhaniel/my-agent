@@ -48,17 +48,63 @@ export interface PanelView {
   emptyText?: string;
 }
 
-export type ViewEntry = MessageView | NoticeView | ToolView | PanelView;
+/** A single todo item. */
+export interface TodoItem {
+  label: string;
+  status: "done" | "active" | "todo";
+}
+
+/** Task list, ported from claude-todo-list. */
+export interface TodoView {
+  kind: "todo";
+  todos: TodoItem[];
+}
+
+/** One row of an inline edit hunk. */
+export interface DiffLine {
+  type: "add" | "del" | "ctx";
+  n?: number;
+  text: string;
+}
+
+/** Inline diff hunk, ported from claude-diff. */
+export interface DiffView {
+  kind: "diff";
+  file: string;
+  summary?: string;
+  lines: DiffLine[];
+}
+
+/** Amber-colored warning, like the MCP authentication prompt. */
+export interface WarningView {
+  kind: "warning";
+  text: string;
+}
+
+export type ViewEntry =
+  | MessageView
+  | NoticeView
+  | ToolView
+  | PanelView
+  | TodoView
+  | DiffView
+  | WarningView;
 
 export interface ChatViewState {
   entries: ViewEntry[];
   liveText: string;
   busy: boolean;
   error?: string;
+  /**
+   * Bumped whenever the transcript is replaced wholesale (/new, session
+   * switch, delete). The UI uses it to remount the Static transcript so the
+   * frozen output is rewritten instead of being appended to stale content.
+   */
+  transcriptGen: number;
 }
 
 export function initialViewState(): ChatViewState {
-  return { entries: [], liveText: "", busy: false };
+  return { entries: [], liveText: "", busy: false, transcriptGen: 0 };
 }
 
 export function reduceChatEvent(
@@ -163,6 +209,29 @@ export function reduceChatEvent(
         `context compacted · ${plural(event.coveredMessages, "message", "messages")} summarized`,
       );
 
+    case "todo-list":
+      return {
+        ...state,
+        entries: [
+          ...state.entries,
+          { kind: "todo", todos: event.todos } as TodoView,
+        ],
+      };
+
+    case "file-diff":
+      return {
+        ...state,
+        entries: [
+          ...state.entries,
+          {
+            kind: "diff",
+            file: event.file,
+            lines: event.lines,
+            ...(event.summary !== undefined ? { summary: event.summary } : {}),
+          } as DiffView,
+        ],
+      };
+
     default:
       return state;
   }
@@ -189,12 +258,49 @@ export function appendPanel(
   };
 }
 
+/** Append a task list — the ⎿ ✔/◼/◻ block used to track multi-step work. */
+export function appendTodo(state: ChatViewState, todos: TodoItem[]): ChatViewState {
+  return {
+    ...state,
+    entries: [...state.entries, { kind: "todo", todos }],
+  };
+}
+
+/** Append an inline diff hunk — the +/- block used to show what changed. */
+export function appendDiff(
+  state: ChatViewState,
+  file: string,
+  lines: DiffLine[],
+  summary?: string,
+): ChatViewState {
+  return {
+    ...state,
+    entries: [
+      ...state.entries,
+      {
+        kind: "diff",
+        file,
+        lines,
+        ...(summary !== undefined ? { summary } : {}),
+      },
+    ],
+  };
+}
+
+/** Append an amber warning, like the MCP authentication prompt. */
+export function appendWarning(state: ChatViewState, text: string): ChatViewState {
+  return {
+    ...state,
+    entries: [...state.entries, { kind: "warning", text }],
+  };
+}
+
 /** Replace the whole entry list — used by session replay and /new. */
 export function replaceEntries(
   state: ChatViewState,
   entries: ViewEntry[],
 ): ChatViewState {
-  return { ...state, entries };
+  return { ...state, entries, transcriptGen: state.transcriptGen + 1 };
 }
 
 export function setError(state: ChatViewState, message?: string): ChatViewState {

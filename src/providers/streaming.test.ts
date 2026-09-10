@@ -55,6 +55,41 @@ describe("GeminiProvider streaming", () => {
     assert.equal(done.message.content, "Hello");
   });
 
+  it("reads text from response parts without logging (regression: chopped TUI)", async () => {
+    // A chunk mixing a text part with a functionCall part. Using the SDK's
+    // `response.text` getter here logs "there are non-text parts…" to stderr,
+    // which lands inside Ink's redraw and corrupts the frame.
+    const chunk = {
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: "Let me check. " },
+              { functionCall: { name: "run_bash", args: { command: "npm test" } } },
+              { text: "Running it now." },
+            ],
+          },
+        },
+      ],
+    };
+
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg?: unknown) => {
+      warnings.push(String(msg));
+    };
+    try {
+      const provider = new GeminiProvider("k", "gemini-2.5-flash", fakeGemini([chunk]));
+      const events = await collect(provider.stream([{ role: "user", content: "hi" }]));
+      assert.deepEqual(events.slice(0, 1), [
+        { type: "text-delta", delta: "Let me check. Running it now." },
+      ]);
+    } finally {
+      console.warn = original;
+    }
+    assert.deepEqual(warnings, [], "streaming must not warn to stderr");
+  });
+
   it("normalizes function calls into the common ToolCallRequest shape", async () => {
     const provider = new GeminiProvider(
       "k",

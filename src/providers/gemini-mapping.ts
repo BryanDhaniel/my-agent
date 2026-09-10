@@ -94,14 +94,40 @@ function parseArgs(raw: string): Record<string, unknown> {
  * Gemini's schema `type` is an uppercase enum ("OBJECT", "STRING") while our
  * ToolSpec carries plain JSON Schema ("object"). Convert, and drop the
  * JSON-Schema-only keywords Gemini rejects.
+ *
+ * Gemini consumes an OpenAPI 3.0 subset, not JSON Schema 2020-12. The two
+ * incompatible shapes here are `exclusiveMinimum`/`exclusiveMaximum` — zod
+ * emits them as numbers (2020-12), but Gemini expects the draft-04 form (a
+ * boolean beside `minimum`) and rejects the numeric keyword outright with a
+ * 400. We fold the exclusive bound into an inclusive `minimum`/`maximum`,
+ * which is the closest Gemini can express.
  */
+const UNSUPPORTED_KEYWORDS = new Set([
+  "$schema",
+  "additionalProperties",
+  "$ref",
+  "$defs",
+  "$anchor",
+  "$id",
+  "examples",
+]);
+
 export function toGeminiSchema(schema: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(schema)) {
-    if (key === "$schema" || key === "additionalProperties") continue;
+    if (UNSUPPORTED_KEYWORDS.has(key)) continue;
 
     if (key === "type" && typeof value === "string") {
       out["type"] = value.toUpperCase();
+      continue;
+    }
+    if (key === "exclusiveMinimum" || key === "exclusiveMaximum") {
+      // Fold 2020-12 numeric exclusive bounds into inclusive ones so the
+      // constraint survives instead of being dropped entirely.
+      const inclusive = key === "exclusiveMinimum" ? "minimum" : "maximum";
+      if (typeof value === "number" && out[inclusive] === undefined) {
+        out[inclusive] = value;
+      }
       continue;
     }
     if (key === "properties" && isRecord(value)) {

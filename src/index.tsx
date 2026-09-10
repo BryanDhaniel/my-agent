@@ -200,6 +200,8 @@ async function boot(): Promise<void> {
     process.exit(0);
   });
 
+  console.clear();
+
   render(
     <App
       service={harness as any}

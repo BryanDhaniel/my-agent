@@ -1,6 +1,5 @@
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Static, Text, useApp, useInput } from "ink";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import TextInput from "ink-text-input";
 import type { AgentHarness } from "../harness/harness.js";
 import type { CredentialValidator, ProviderManager } from "../providers/manager.js";
 import type { SetupPrompts } from "../providers/setup-flow.js";
@@ -13,26 +12,32 @@ import { MarkdownLite } from "./markdown.js";
 import { SessionBrowser } from "./session-browser.js";
 import { SLASH_COMMANDS, suggestCommands } from "./commands.js";
 import {
+  Diff,
   ErrorLine,
-  Header,
   NoticeLine,
   Panel,
   Paper,
   PaperText,
   PermissionBlock,
   Picker,
+  PromptComposer,
   SecretPrompt,
   type PickerItem,
   RoleBlock,
-  Spinner,
+  SessionHeader,
   StatusBar,
   SuggestionList,
+  ThinkingLine,
+  TodoList,
   ToolStatusLine,
-  Welcome,
+  WarnLine,
 } from "./ink.js";
 import {
+  appendDiff,
   appendNotice,
   appendPanel,
+  appendTodo,
+  appendWarning,
   initialViewState,
   reduceChatEvent,
   replaceEntries,
@@ -42,7 +47,7 @@ import {
   type PanelRow,
   type ViewEntry,
 } from "./view.js";
-import { INK, MARK, SPACE } from "./theme.js";
+import { INK, SPACE } from "./theme.js";
 
 interface BrowserState {
   sessions: LoadedSession[];
@@ -63,6 +68,13 @@ type FlowState =
     }
   | { kind: "api-key"; providerId: string; label: string; value: string; error?: string }
   | { kind: "confirm-remove"; providerId: string };
+
+/**
+ * Window in which an identical resubmit is treated as a duplicate key event
+ * rather than a second request. Short enough that deliberately sending the
+ * same text twice still works, long enough to absorb CRLF/echo duplication.
+ */
+const SUBMIT_DEDUPE_MS = 400;
 
 export function App({
   service,
@@ -87,6 +99,10 @@ export function App({
   const [browser, setBrowser] = useState<BrowserState | undefined>();
   const [verboseTool, setVerboseTool] = useState(false);
   const abortRef = useRef<AbortController | undefined>(undefined);
+  /** Synchronous "a turn is running" flag — see the guard in submit(). */
+  const inFlightRef = useRef(false);
+  /** Last accepted submit, for the duplicate-key guard in submit(). */
+  const lastSubmitRef = useRef<{ text: string; at: number } | undefined>(undefined);
 
   const suggestions = suggestCommands(value, service.skillCommands);
   const busy = view.busy;
@@ -412,6 +428,13 @@ export function App({
       return;
     }
 
+    // esc interrupts a running turn. ThinkingLine advertises this, and the
+    // composer is unmounted while busy, so nothing else claims the key here.
+    if (busy && key.escape) {
+      abortRef.current?.abort();
+      return;
+    }
+
     // verbose Tool Results: `v` while the prompt is hidden mid-Turn,
     // or /verbose any time — typing "v" into the input is never hijacked.
     if (busy && input === "v") {
@@ -583,6 +606,45 @@ export function App({
         );
         return true;
       }
+      case "/todo": {
+        // Demo: render the task-list grammar that the agent will use when it
+        // plans multi-step work. Real agents will emit this via AgentEvent.
+        setView((s) =>
+          appendTodo(s, [
+            { label: "Read the settings page", status: "done" },
+            { label: "Add the dark-mode toggle", status: "active" },
+            { label: "Run the test suite", status: "todo" },
+          ]),
+        );
+        return true;
+      }
+      case "/diff": {
+        // Demo: render the inline-diff grammar that the agent will use when it
+        // edits a file. Real agents will emit this via AgentEvent.
+        setView((s) =>
+          appendDiff(
+            s,
+            "app/settings/page.tsx",
+            [
+              { type: "ctx", n: 11, text: "export function Settings() {" },
+              { type: "del", n: 12, text: "  return <Panel>{sections}</Panel>" },
+              { type: "add", n: 12, text: "  return (" },
+              { type: "add", n: 13, text: "    <Panel header={<ThemeToggle />}>" },
+              { type: "add", n: 14, text: "      {sections}" },
+              { type: "ctx", n: 15, text: "    </Panel>" },
+            ],
+            "Updated app/settings/page.tsx with 3 additions and 1 removal",
+          ),
+        );
+        return true;
+      }
+      case "/mcp": {
+        // Demo: render the amber MCP authentication warning.
+        setView((s) =>
+          appendWarning(s, "3 MCP servers need authentication · run /mcp"),
+        );
+        return true;
+      }
       default:
         return false;
     }
@@ -628,7 +690,24 @@ export function App({
       }
     }
 
-    if (busy || currentRequest) return;
+    // `busy` is React state, so it is still false for any Enter that arrives
+    // before the next render commits — that is how one prompt became two or
+    // three concurrent turns (and hence two or three `❯` copies). A ref is
+    // updated synchronously, so it can never be stale.
+    if (busy || currentRequest || inFlightRef.current) return;
+
+    // Windows terminals deliver Enter as CRLF, so a single physical Enter can
+    // raise several return events; some terminals also echo input back when
+    // raw mode is only partly applied. Either way the same text can reach here
+    // repeatedly. Ignore an immediate repeat of the same prompt.
+    const now = Date.now();
+    const last = lastSubmitRef.current;
+    if (last !== undefined && last.text === outgoing && now - last.at < SUBMIT_DEDUPE_MS) {
+      return;
+    }
+    lastSubmitRef.current = { text: outgoing, at: now };
+
+    inFlightRef.current = true;
     setValue("");
 
     const controller = new AbortController();
@@ -641,76 +720,176 @@ export function App({
           setView((prev) => reduceChatEvent(prev, event as any));
         }
       } catch (err) {
-        setView((s) => setError(s, err instanceof Error ? err.message : String(err)));
+        // An interrupt is a normal outcome, not a failure: showing
+        // "AbortError" would look like the request broke.
+        if (!controller.signal.aborted) {
+          setView((s) => setError(s, err instanceof Error ? err.message : String(err)));
+        }
       } finally {
-        setView((s) => ({ ...setBusy(s, false), liveText: "" }));
+        inFlightRef.current = false;
+        setView((s) => {
+          const settled = { ...setBusy(s, false), liveText: "" };
+          return controller.signal.aborted
+            ? appendNotice(settled, "interrupted — esc stopped this turn")
+            : settled;
+        });
       }
     })();
   };
 
+  const APP_VERSION = "0.1.0";
+
+  /**
+   * Map a PermissionBlock radiogroup selection to a gate response.
+   * Options are [Yes, (Yes+always)?, No]; with no ruleKey the middle option
+   * collapses into "No", so index 1 means deny in that shape.
+   */
+  const choosePermission = (index: number): void => {
+    if (!currentRequest) return;
+    const withAlways = currentRequest.ruleKey !== undefined;
+    if (index === 0) {
+      gate.respond(currentRequest.id, "once");
+    } else if (index === 1 && withAlways) {
+      gate.respond(currentRequest.id, "always");
+      setView((s) =>
+        appendNotice(
+          s,
+          `always allowing ${currentRequest.toolName} ${currentRequest.ruleKey} this session`,
+        ),
+      );
+    } else {
+      gate.respond(currentRequest.id, "deny");
+    }
+  };
+
+  // The transcript is written ONCE through <Static> instead of being redrawn
+  // with the rest of the frame. Without this, every keystroke and every
+  // streamed token repainted the whole conversation, so terminal scrollback
+  // accumulated a copy per frame and looked like duplicated messages.
+  // The newest entry stays dynamic: it is the only one that mutates in place
+  // (a tool going running -> done). Remounted wholesale on /new, switch or
+  // delete via transcriptGen, so replaced content is rewritten, not appended.
+  // Only a tool that is still running needs to stay dynamic, because it is the
+  // one entry that mutates in place (running -> done). Everything else is final
+  // the moment it is created, so it goes to Static immediately — keeping it
+  // dynamic would redraw it every frame and then write it AGAIN when it later
+  // moved into Static, which is exactly what made each message appear twice.
+  const lastEntry = view.entries[view.entries.length - 1];
+  const liveTool =
+    lastEntry !== undefined && lastEntry.kind === "tool" && lastEntry.status === "running"
+      ? lastEntry
+      : undefined;
+  const settledEntries = liveTool !== undefined ? view.entries.slice(0, -1) : view.entries;
+  const trailingEntry = liveTool;
+
+  /**
+   * True once the current turn has produced its answer.
+   *
+   * Must look past trailing notices: after the reply the harness still appends
+   * "memory · saved …", so the newest entry is a notice, not the answer —
+   * checking only the last entry left the spinner showing after every turn.
+   */
+  const lastUserIndex = view.entries.reduce(
+    (acc, entry, i) =>
+      entry.kind === "message" && entry.role === "user" ? i : acc,
+    -1,
+  );
+  const answered =
+    lastUserIndex >= 0 &&
+    view.entries
+      .slice(lastUserIndex + 1)
+      .some((entry) => entry.kind === "message" && entry.role === "assistant");
+
   return (
     <Paper>
-      <Header />
-
-      {/*
-        Deliberately NOT <Static>: entries can be replaced wholesale (/new,
-        session switch, delete), and Static only draws items it has not yet
-        rendered, so replaced content would silently never appear.
-      */}
-      <Box flexDirection="column">
-        {view.entries.map((entry, i) => (
+      <Static key={view.transcriptGen} items={settledEntries}>
+        {(entry, i) => (
           <Box key={i} flexDirection="column" marginTop={SPACE.turnGap}>
             <EntryLine entry={entry} verbose={verboseTool} />
           </Box>
-        ))}
-      </Box>
+        )}
+      </Static>
 
-      {view.entries.length === 0 && !busy && browser === undefined && <Welcome />}
-
-      {busy ? (
-        <Box marginTop={1}>
-          {view.liveText ? (
-            <RoleBlock role="agent">
-              <MarkdownLite text={view.liveText} />
-            </RoleBlock>
-          ) : (
-            <Spinner label="thinking" />
-          )}
+      {trailingEntry !== undefined ? (
+        <Box flexDirection="column" marginTop={SPACE.turnGap}>
+          <EntryLine entry={trailingEntry} verbose={verboseTool} />
         </Box>
       ) : null}
 
-      {view.error ? (
-        <Box marginTop={1}>
-          <ErrorLine>{view.error}</ErrorLine>
-        </Box>
-      ) : null}
-
-      {browser !== undefined ? (
-        <SessionBrowser
-          sessions={browser.sessions}
-          currentId={service.id}
-          selected={browser.selected}
+      {/*
+        Deliberately not gated on `busy`: the header used to vanish the instant
+        a turn started (before the first entry existed), so Ink erased it
+        mid-redraw and left a chopped frame. It now stays until there is real
+        transcript to show.
+      */}
+      {view.entries.length === 0 && browser === undefined && flow === undefined && !currentRequest && (
+        <SessionHeader
+          brand="my-agent"
+          version={APP_VERSION}
+          model={`${service.meta.provider}/${service.meta.model}`}
+          cwd={service.cwd}
+          tips={[
+            "Ask for a change, or / for commands",
+            "/provider to pick a model",
+            "/skills to list what's loaded",
+          ]}
+          whatsNew={[
+            "Added /todo and /diff to demo screen grammar",
+            "Added effort chip and token counter to the prompt",
+          ]}
         />
-      ) : null}
+      )}
 
-      {flow !== undefined ? <FlowView flow={flow} /> : null}
-
-      {currentRequest ? <PermissionBlock request={currentRequest} /> : null}
-
-      {!busy && !currentRequest && browser === undefined && flow === undefined && (
-        <>
-          {suggestions.length > 0 && (
-            <SuggestionList commands={suggestions} selected={selectedSuggestion} />
-          )}
-          <Box marginLeft={SPACE.contentIndent}>
-            <Text {...{ bold: true, color: "cyan" }}>{MARK.prompt} </Text>
-            <TextInput
-              value={value}
-              onChange={handleChange}
-              onSubmit={submit}
-              placeholder="Ask a question, or / for commands"
-            />
+        {/*
+          Deliberately no live streaming preview. The streamed text is drawn in
+          the dynamic region, and the committed reply is then written again by
+          <Static> — so a turn printed its answer twice whenever the dynamic
+          region grew enough to scroll. Showing the thinking line until the
+          reply is committed keeps each answer written exactly once.
+        */}
+        {/*
+          Only while waiting for the answer. Once an assistant message is on
+          screen the turn is just finishing up (memory, compaction) — showing
+          "Thinking…" again printed a second, redundant spinner for every turn.
+        */}
+        {busy && !answered ? (
+          <Box marginTop={1}>
+            <ThinkingLine />
           </Box>
+        ) : null}
+
+        {view.error ? (
+          <Box marginTop={1}>
+            <ErrorLine>{view.error}</ErrorLine>
+          </Box>
+        ) : null}
+
+        {browser !== undefined ? (
+          <SessionBrowser
+            sessions={browser.sessions}
+            currentId={service.id}
+            selected={browser.selected}
+          />
+        ) : null}
+
+        {flow !== undefined ? <FlowView flow={flow} /> : null}
+
+        {currentRequest ? (
+          <PermissionBlock request={currentRequest} onChoose={choosePermission} />
+        ) : null}
+
+        {!busy && !currentRequest && browser === undefined && flow === undefined && (
+          <>
+            {suggestions.length > 0 && (
+              <SuggestionList commands={suggestions} selected={selectedSuggestion} />
+            )}
+          <PromptComposer
+            value={value}
+            onChange={handleChange}
+            onSubmit={submit}
+            placeholder="Ask a question, or / for commands"
+            effort="high"
+          />
         </>
       )}
 
@@ -771,7 +950,7 @@ function EntryLine({
     case "message":
       return entry.role === "user" ? (
         <RoleBlock role="you">
-          <PaperText text={entry.content} />
+          <PaperText text={entry.content} bold />
         </RoleBlock>
       ) : (
         <RoleBlock role="agent">
@@ -784,5 +963,17 @@ function EntryLine({
       return <ToolStatusLine entry={entry} verbose={verbose} />;
     case "panel":
       return <Panel view={entry} />;
+    case "todo":
+      return <TodoList todos={entry.todos} />;
+    case "diff":
+      return (
+        <Diff
+          file={entry.file}
+          lines={entry.lines}
+          {...(entry.summary !== undefined ? { summary: entry.summary } : {})}
+        />
+      );
+    case "warning":
+      return <WarnLine>{entry.text}</WarnLine>;
   }
 }

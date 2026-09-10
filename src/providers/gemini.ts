@@ -1,4 +1,8 @@
-import { GoogleGenAI, type GenerateContentConfig } from "@google/genai";
+import {
+  GoogleGenAI,
+  type GenerateContentConfig,
+  type GenerateContentResponse,
+} from "@google/genai";
 import type { AssistantMessage, ChatMessage } from "../agent/types.js";
 import type { Provider, StreamEvent, StreamOptions } from "./provider.js";
 import {
@@ -56,7 +60,7 @@ export class GeminiProvider implements Provider {
 
     try {
       for await (const chunk of chunks) {
-        const text = chunk.text;
+        const text = textOf(chunk);
         if (text !== undefined && text !== "") {
           content += text;
           yield { type: "text-delta", delta: text };
@@ -78,4 +82,32 @@ export class GeminiProvider implements Provider {
     };
     yield { type: "done", message };
   }
+}
+
+/**
+ * Concatenate just the text parts of a streamed chunk.
+ *
+ * Deliberately does NOT use the SDK's `response.text` getter: when a chunk
+ * carries functionCall parts, that getter logs
+ * "there are non-text parts functionCall in the response…" to stderr. In a
+ * TUI that write lands in the middle of Ink's redraw, which desynchronises
+ * its line accounting — the visible symptom is a chopped header and
+ * duplicated lines. Reading the parts directly gives the same text with no
+ * side effects.
+ */
+function textOf(chunk: GenerateContentResponse): string {
+  const parts = chunk.candidates?.[0]?.content?.parts;
+  if (parts !== undefined) {
+    let out = "";
+    for (const part of parts) {
+      if (typeof part.text === "string") out += part.text;
+    }
+    return out;
+  }
+  // Plain objects (e.g. test doubles) carry `text` directly. Only read it
+  // when the chunk has no candidates: on a real response the `text` getter is
+  // the thing that logs the warning, and it only warns when it finds non-text
+  // parts — which requires candidates. So this branch is always warning-free.
+  const direct = (chunk as { text?: unknown }).text;
+  return typeof direct === "string" ? direct : "";
 }

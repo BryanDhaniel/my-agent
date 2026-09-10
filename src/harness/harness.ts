@@ -51,6 +51,7 @@ export function buildSystemPrompt(
     "You are my-agent, a terminal coding agent working in the user's project directory.",
     "You can read, create, edit, search files and run shell commands via your tools.",
     "Use tools whenever they help; prefer relative paths; be concise and direct.",
+    "Never repeat, restate, or echo back the user's message. Answer their request directly without greeting or preamble.",
     "",
     `Project root: ${cwd}`,
     `Top-level entries:\n${topLevel}`,
@@ -476,7 +477,13 @@ export class AgentHarness {
     }
 
     // Compaction before memory extraction, so extraction sees the whole run.
-    yield* this.#compactContext();
+    // Gated on needsCompaction: compact() summarises via the provider, so it
+    // is a whole extra LLM round-trip. Running it every turn added seconds to
+    // even a trivial "hello". Only worth it once the conversation has actually
+    // outgrown its budget.
+    if (this.#context.needsCompaction(this.#history)) {
+      yield* this.#compactContext();
+    }
 
     if (outcome.status === "completed") {
       yield* this.#extractMemories([userMessage, ...outcome.additions]);

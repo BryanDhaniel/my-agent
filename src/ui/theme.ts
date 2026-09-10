@@ -14,6 +14,33 @@
  * errors, green for success, yellow for warnings. Nothing else is coloured.
  */
 
+/**
+ * Concrete values behind the semantic tokens below.
+ *
+ * Terminals resolve named colours through the user's theme, so the two hues
+ * that carry meaning — the terracotta accent and the cyan used for
+ * identifiers — are pinned to hex. Everything else stays semantic (bold,
+ * gray, dimColor) so it still respects the terminal's own palette.
+ */
+export const PALETTE = {
+  fg: "#c0caf5",
+  /** The single accent: agent identity, active rows, frames. */
+  brand: "#cd694a",
+  brandHilite: "#e79475",
+  gray: "#949494",
+  /** Secondary text: tool results, metadata. */
+  meta: "#8b8fa3",
+  /** Structural glyphs: rails, parens. Never content. */
+  faint: "#565f89",
+  ok: "#4ea96f",
+  done: "#87d787",
+  active: "#d78787",
+  error: "#f7768e",
+  warn: "#e0af68",
+  /** Identifiers in a tool call: paths, commands, model ids. */
+  arg: "#7dcfff",
+} as const;
+
 export const INK = {
   /** Bold terminal foreground: user input, headings, emphasis. */
   strong: { bold: true as const },
@@ -23,11 +50,15 @@ export const INK = {
   dim: { color: "gray" as const },
   /** Tertiary hints only. Not for content the user must read. */
   faint: { dimColor: true as const },
-  /** The single accent: agent identity, active selection, prompt. */
-  accent: { color: "cyan" as const },
-  ok: { color: "green" as const },
-  warn: { color: "yellow" as const },
-  error: { color: "red" as const, bold: true as const },
+  /** The single accent: agent identity, active selection, prompt, frames. */
+  accent: { color: PALETTE.brand },
+  /** Identifiers inside a tool call: paths, commands, model ids. */
+  arg: { color: PALETTE.arg },
+  /** Structural glyphs (⎿ rails, parens). Not readable content. */
+  rail: { color: PALETTE.faint },
+  ok: { color: PALETTE.ok },
+  warn: { color: PALETTE.warn },
+  error: { color: PALETTE.error, bold: true as const },
 } as const;
 
 /** Glyphs. Terminal-native, no decorative corner brackets. */
@@ -42,10 +73,29 @@ export const MARK = {
   notice: "·",
   sessionCurrent: "●",
   sessionOther: "○",
+  /** Tool rail: the call sits on ⏺, its result on ⎿. */
+  toolCall: "⏺",
+  toolResult: "⎿",
+  /** Active row in a picker or permission list. */
+  selector: "❯",
 } as const;
 
 /** Spinner frames — braille dots, the terminal convention. */
 export const DROP_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+
+/**
+ * Thinking frames and verbs: a slow drifting glyph rather than a fast
+ * spinner, so a long wait reads as "working" instead of "panicking".
+ */
+export const THINK_FRAMES = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"] as const;
+export const THINK_VERBS = [
+  "Thinking",
+  "Percolating",
+  "Noodling",
+  "Conjuring",
+  "Herding",
+  "Rummaging",
+] as const;
 
 export function roleLabel(role: "you" | "agent"): string {
   return role === "you" ? `${MARK.prompt} you` : `${MARK.assistant} agent`;
@@ -95,6 +145,37 @@ export function splitRule(
     left: RULE[weight].repeat(side),
     right: RULE[weight].repeat(Math.max(0, width - inner - side)),
   };
+}
+
+/**
+ * A bordered box with its title seated in the top edge — the terminal
+ * equivalent of a <fieldset>/<legend>. Pure strings, so callers can pad,
+ * colour and compose rows without knowing how the frame is drawn.
+ *
+ * ┌─ title ──────────┐
+ * │ row              │
+ * └──────────────────┘
+ */
+export function frameBox(
+  title: string,
+  rows: readonly string[],
+  width: number,
+): string[] {
+  const w = Math.max(20, width);
+  const inner = w - 4;
+
+  const label = title === "" ? "" : `─ ${title} `;
+  const topFill = Math.max(0, w - 2 - label.length);
+  const top = `┌${label}${"─".repeat(topFill)}┐`;
+
+  const bottom = `└${"─".repeat(Math.max(0, w - 2))}┘`;
+
+  const body = rows.map((row) => {
+    const clipped = row.length > inner ? `${row.slice(0, Math.max(0, inner - 1))}…` : row;
+    return `│ ${clipped.padEnd(inner)} │`;
+  });
+
+  return [top, ...body, bottom];
 }
 
 /**

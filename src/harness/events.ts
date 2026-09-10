@@ -23,4 +23,16 @@ export type AgentEvent =
   /** Candidate memories extracted from this run and persisted. */
   | { type: "memory-stored"; count: number }
   /** The conversation outgrew its budget and was folded into a summary. */
-  | { type: "context-compacted"; coveredMessages: number };
+  | { type: "context-compacted"; coveredMessages: number }
+  /** A task list update — the ⎿ ✔/◼/◻ block used to track multi-step work. */
+  | {
+      type: "todo-list";
+      todos: Array<{ label: string; status: "done" | "active" | "todo" }>;
+    }
+  /** An inline diff hunk — the +/- block used to show what a file edit changed. */
+  | {
+      type: "file-diff";
+      file: string;
+      summary?: string;
+      lines: Array<{ type: "add" | "del" | "ctx"; n?: number; text: string }>;
+    };

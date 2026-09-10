@@ -48,6 +48,43 @@ class MockProvider implements Provider {
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
+/** Poll the captured stdout until a regex matches (or timeout). The first
+ *  turn can outlast a fixed sleep when memory is seeded, so waiting on the
+ *  actual rendered text is far less flaky than guessing a duration. */
+const waitFor = async (
+  getOut: () => string,
+  re: RegExp,
+  timeoutMs = 6000,
+): Promise<boolean> => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (re.test(getOut().replace(/\[[0-9;]*m/g, ""))) return true;
+    await sleep(50);
+  }
+  return false;
+};
+
+/**
+ * Wait until a turn has fully settled: the expected reply is on screen AND
+ * the "Thinking…" indicator is gone (busy=false, so the prompt is mounted and
+ * ready to accept the next keystroke). Waiting only on the reply text returns
+ * mid-stream, while the input is still unmounted — keystrokes sent then pile
+ * into one buffer and get submitted together.
+ */
+const waitIdleFor = async (
+  getOut: () => string,
+  replyRe: RegExp,
+  timeoutMs = 8000,
+): Promise<boolean> => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const plain = getOut().replace(/\[[0-9;]*m/g, "");
+    if (replyRe.test(plain) && !/Thinking/.test(plain)) return true;
+    await sleep(50);
+  }
+  return false;
+};
+
 async function main(): Promise<void> {
   const tmpDir = await mkdtemp(join(tmpdir(), "tui-smoke-"));
   const store = new SessionStore(tmpDir);
@@ -92,6 +129,7 @@ async function main(): Promise<void> {
   fake["readable"] = true;
 
   let out = "";
+  let outAfterSkills = "";
   stdout.on("data", (c: Buffer) => {
     out += c.toString("utf8");
   });
@@ -119,14 +157,21 @@ async function main(): Promise<void> {
   stdin.write("we should keep using pnpm for this repo");
   await sleep(200);
   stdin.write("\r");
-  await sleep(1500);
+  // Wait for the assistant turn to actually finish (busy=false, prompt
+  // mounted) before driving more keys. Match the assistant's reply ("Noted."),
+  // NOT the typed prompt text — the prompt text also contains "keep using
+  // pnpm", so matching it would return before the turn even starts.
+  await waitIdleFor(() => out, /Noted\./);
 
   // /skills must render registered skills as a readable panel. Regression
   // guard for "commands print nothing you can actually see".
   stdin.write("/skills");
   await sleep(300);
   stdin.write("\r");
-  await sleep(900);
+  // Snapshot now: a later /new wipes the transcript, so the panel would be
+  // gone from the final render. Capture it once it is actually on screen.
+  await waitFor(() => out, /Skills \(\d+\)/);
+  outAfterSkills = out;
 
   // /provider must open a local picker and never reach the model.
   stdin.write("/provider");
@@ -172,7 +217,7 @@ async function main(): Promise<void> {
     ["assistant reply rendered", /keep using pnpm/i.test(plain)],
     ["memory-recalled notice", /recalled\s*\d+\s*memor/i.test(plain)],
     ["memory-stored notice", /saved\s*\d+\s*memor/i.test(plain)],
-    ["skills panel title", /Skills \(\d+\)/.test(plain)],
+    ["skills panel title", /Skills \(\d+\)/.test(outAfterSkills)],
     ["skills panel lists the skill", /review-pr/.test(plain)],
     ["skills panel shows description", /Review a pull request/.test(plain)],
     ["session footer rendered", /session\s+\S+/.test(plain)],

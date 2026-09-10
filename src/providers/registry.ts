@@ -99,7 +99,7 @@ export const PROVIDERS: readonly ProviderDefinition[] = [
     },
     defaultModel: DEFAULT_MODELS.gemini,
     models: models("gemini", [
-      ["gemini-2.5-flash", "Gemini 2.5 Flash", 1_048_576, { tools: true, vision: true }],
+      ["gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", 1_048_576, { tools: true, vision: true }],
       ["gemini-2.5-pro", "Gemini 2.5 Pro", 1_048_576, { tools: true, vision: true }],
       ["gemini-2.0-flash", "Gemini 2.0 Flash", 1_048_576, { tools: true, vision: true }],
     ]),

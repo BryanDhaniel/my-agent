@@ -45,6 +45,28 @@ describe("toGeminiRequest", () => {
     });
   });
 
+  it("echoes a function call's thoughtSignature back on the same part", () => {
+    const { contents } = toGeminiRequest([
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "t1",
+            name: "run_bash",
+            arguments: '{"command":"ls"}',
+            thoughtSignature: "sig-abc",
+          },
+        ],
+      },
+    ]);
+    const parts = contents[0]?.parts ?? [];
+    assert.deepEqual(parts[0], {
+      functionCall: { name: "run_bash", args: { command: "ls" } },
+      thoughtSignature: "sig-abc",
+    });
+  });
+
   it("names each tool result after the call it answers", () => {
     const { contents } = toGeminiRequest([
       {
@@ -184,5 +206,44 @@ describe("GeminiCallAccumulator", () => {
     const acc = new GeminiCallAccumulator();
     acc.add([{ id: "call_1", name: "run_bash", args: { command: "ls" } }]);
     assert.equal(acc.finish()?.[0]?.id, "call_1");
+  });
+
+  it("captures thoughtSignature from parts and keeps it across chunks", () => {
+    const acc = new GeminiCallAccumulator();
+    acc.addParts([
+      {}, // a non-call part (e.g. text) must not shift the call ordinal
+      {
+        functionCall: { name: "run_bash", args: { command: "ls" } },
+        thoughtSignature: "sig-1",
+      },
+    ]);
+    // A later chunk re-sends the call without the signature: keep the first.
+    acc.addParts([{ functionCall: { name: "run_bash", args: { command: "ls" } } }]);
+    assert.deepEqual(acc.finish(), [
+      {
+        id: "run_bash-0",
+        name: "run_bash",
+        arguments: '{"command":"ls"}',
+        thoughtSignature: "sig-1",
+      },
+    ]);
+  });
+
+  it("round-trips a captured signature into the next request (regression: Gemini 400)", () => {
+    // 1. the model returns a call carrying an opaque thoughtSignature
+    const acc = new GeminiCallAccumulator();
+    acc.addParts([
+      {
+        functionCall: { name: "run_bash", args: { command: "npm test" } },
+        thoughtSignature: "sig-xyz",
+      },
+    ]);
+    const toolCalls = acc.finish();
+    // 2. that assistant turn is sent back on the following request
+    const { contents } = toGeminiRequest([
+      { role: "assistant", content: "", toolCalls },
+    ]);
+    const part = contents[0]?.parts?.[0] as { thoughtSignature?: string } | undefined;
+    assert.equal(part?.thoughtSignature, "sig-xyz");
   });
 });

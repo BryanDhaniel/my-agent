@@ -24,6 +24,16 @@ export interface GeminiFunctionCall {
   args?: Record<string, unknown>;
 }
 
+/**
+ * Minimal shape of a streamed Gemini `Part`. A function call and its opaque
+ * `thoughtSignature` live on the *same* part, so they must be read together —
+ * the SDK's `functionCalls` convenience getter drops the signature.
+ */
+export interface GeminiCallPart {
+  functionCall?: GeminiFunctionCall;
+  thoughtSignature?: string;
+}
+
 export function toGeminiRequest(messages: ChatMessage[]): GeminiRequest {
   let systemInstruction: string | undefined;
   const contents: Content[] = [];
@@ -60,7 +70,15 @@ export function toGeminiRequest(messages: ChatMessage[]): GeminiRequest {
         if (m.content !== "") parts.push({ text: m.content });
         for (const tc of m.toolCalls ?? []) {
           nameById.set(tc.id, tc.name);
-          parts.push({ functionCall: { name: tc.name, args: parseArgs(tc.arguments) } });
+          // Echo the provider signature back on the SAME part as the call.
+          // Gemini 3 rejects a functionCall part that is missing its
+          // thoughtSignature with 400 INVALID_ARGUMENT.
+          parts.push({
+            functionCall: { name: tc.name, args: parseArgs(tc.arguments) },
+            ...(tc.thoughtSignature !== undefined
+              ? { thoughtSignature: tc.thoughtSignature }
+              : {}),
+          });
         }
         push("model", parts);
         break;
@@ -158,15 +176,47 @@ export function toGeminiTools(tools: ToolSpec[]): FunctionDeclaration[] {
  * each index, so later chunks simply overwrite earlier ones at that index.
  */
 export class GeminiCallAccumulator {
-  #calls = new Map<number, { id: string; name: string; args: string }>();
+  #calls = new Map<
+    number,
+    { id: string; name: string; args: string; thoughtSignature?: string }
+  >();
 
+  /** Record `functionCalls` (no signature) — used for plain test doubles. */
   add(calls: readonly GeminiFunctionCall[] | undefined): void {
-    (calls ?? []).forEach((call, index) => {
-      const prev = this.#calls.get(index);
-      const name = call.name ?? prev?.name ?? "";
-      const args =
-        call.args !== undefined ? JSON.stringify(call.args) : (prev?.args ?? "{}");
-      this.#calls.set(index, { id: call.id ?? prev?.id ?? "", name, args });
+    (calls ?? []).forEach((call, index) => this.#record(index, call, undefined));
+  }
+
+  /**
+   * Record function-call parts together with their `thoughtSignature`. Parts
+   * are indexed by the ordinal of the call among them, so text parts
+   * interleaved in the same chunk do not shift the id fallback.
+   */
+  addParts(parts: readonly GeminiCallPart[] | undefined): void {
+    let ordinal = 0;
+    for (const part of parts ?? []) {
+      const call = part.functionCall;
+      if (call === undefined) continue;
+      this.#record(ordinal, call, part.thoughtSignature);
+      ordinal += 1;
+    }
+  }
+
+  #record(
+    index: number,
+    call: GeminiFunctionCall,
+    thoughtSignature: string | undefined,
+  ): void {
+    const prev = this.#calls.get(index);
+    const name = call.name ?? prev?.name ?? "";
+    const args =
+      call.args !== undefined ? JSON.stringify(call.args) : (prev?.args ?? "{}");
+    // A later chunk that omits the signature keeps the one we already saw.
+    const signature = thoughtSignature ?? prev?.thoughtSignature;
+    this.#calls.set(index, {
+      id: call.id ?? prev?.id ?? "",
+      name,
+      args,
+      ...(signature !== undefined ? { thoughtSignature: signature } : {}),
     });
   }
 
@@ -179,6 +229,9 @@ export class GeminiCallAccumulator {
         id: c.id === "" ? `${c.name || "call"}-${index}` : c.id,
         name: c.name,
         arguments: c.args,
+        ...(c.thoughtSignature !== undefined
+          ? { thoughtSignature: c.thoughtSignature }
+          : {}),
       }));
   }
 }

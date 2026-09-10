@@ -67,9 +67,14 @@ export class GeminiProvider implements Provider {
           content += text;
           yield { type: "text-delta", delta: text };
         }
-        const functionCalls = chunk.functionCalls;
-        if (functionCalls !== undefined && functionCalls.length > 0) {
-          calls.add(functionCalls);
+        // Read the raw parts so each call's `thoughtSignature` is captured —
+        // the SDK's `functionCalls` getter drops it. Doubles that only expose
+        // `functionCalls` (no candidates) still work via the fallback.
+        const parts = chunk.candidates?.[0]?.content?.parts;
+        if (parts !== undefined) {
+          calls.addParts(parts);
+        } else {
+          calls.add(chunk.functionCalls);
         }
         const um = chunk.usageMetadata;
         if (um !== undefined) {

@@ -105,6 +105,36 @@ describe("GeminiProvider streaming", () => {
     ]);
   });
 
+  it("captures a function call's thoughtSignature from response parts", async () => {
+    const chunk = {
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: { name: "run_bash", args: { command: "npm test" } },
+                thoughtSignature: "sig-xyz",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const provider = new GeminiProvider("k", "gemini-3.5-flash-lite", fakeGemini([chunk]));
+    const events = await collect(provider.stream([{ role: "user", content: "hi" }]));
+    const done = events.at(-1);
+
+    assert.ok(done?.type === "done");
+    assert.deepEqual(done.message.toolCalls, [
+      {
+        id: "run_bash-0",
+        name: "run_bash",
+        arguments: '{"command":"npm test"}',
+        thoughtSignature: "sig-xyz",
+      },
+    ]);
+  });
+
   it("emits an error event and no done when the API fails", async () => {
     const provider = new GeminiProvider("k", "gemini-2.5-flash", {
       models: {

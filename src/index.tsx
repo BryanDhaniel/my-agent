@@ -5,7 +5,7 @@ import { AgentHarness } from "./harness/harness.js";
 import { defaultRegistry } from "./agent/tools/index.js";
 import { USAGE, parseArgs } from "./cli-args.js";
 import { ConfigError, loadConfig } from "./config.js";
-import { AskUserGate, AutoApproveGate, NOOP_UI_GATE } from "./permissions/gate.js";
+import { ModeGate } from "./permissions/gate.js";
 import type { PermissionGate, UiGate } from "./permissions/gate.js";
 import { createProvider } from "./providers/create-provider.js";
 import { SessionStore } from "./session/store.js";
@@ -73,13 +73,12 @@ async function boot(): Promise<void> {
     return value;
   };
 
-  let uiGate: UiGate = NOOP_UI_GATE;
-  let permGate: PermissionGate = new AutoApproveGate();
-  if (!flags.yolo) {
-    const askGate = new AskUserGate();
-    uiGate = askGate;
-    permGate = askGate;
-  }
+  // One switchable gate backs both the harness and the TUI. `--yolo` starts in
+  // "auto" (no prompts); otherwise "manual" (ask). The TUI cycles it with
+  // shift+tab, which is why a single object serves both interfaces.
+  const modeGate = new ModeGate(flags.yolo ? "auto" : "manual");
+  const uiGate: UiGate = modeGate;
+  const permGate: PermissionGate = modeGate;
 
   const mcpConfig = await loadMcpConfig(process.cwd());
 
@@ -218,6 +217,8 @@ async function boot(): Promise<void> {
       gate={uiGate}
       store={store}
       providers={providerManager}
+      initialMode={modeGate.mode}
+      onModeChange={(mode) => modeGate.setMode(mode)}
     />,
   );
 }

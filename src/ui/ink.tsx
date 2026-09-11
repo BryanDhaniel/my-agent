@@ -1,7 +1,7 @@
 import { Box, Text, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import React, { useEffect, useState } from "react";
-import type { PermissionRequest } from "../permissions/gate.js";
+import type { PermissionMode, PermissionRequest } from "../permissions/gate.js";
 import type { SlashCommand } from "./commands.js";
 import type { PanelView, ToolView } from "./view.js";
 import {
@@ -676,32 +676,26 @@ export function ThinkingLine({
 }
 
 const PROMPT_MODES: Record<
-  "auto" | "manual" | "accept-edits" | "plan",
+  PermissionMode,
   { glyph: string; label: string; color: string; hint: string }
 > = {
   auto: {
     glyph: "⏵⏵",
     label: "auto mode on",
     color: PALETTE.warn,
-    hint: "(shift+tab to cycle) · ← for agents",
+    hint: "auto-approves tools · shift+tab to change",
   },
   manual: {
     glyph: "⏸",
     label: "manual mode on",
     color: PALETTE.gray,
-    hint: "· ? for shortcuts · ← for agents",
-  },
-  "accept-edits": {
-    glyph: "⏵⏵",
-    label: "accept edits on",
-    color: "#afafd7",
-    hint: "(shift+tab to cycle) · ← for agents",
+    hint: "asks before mutating tools · shift+tab to change",
   },
   plan: {
     glyph: "⏸",
     label: "plan mode on",
     color: "#5fafaf",
-    hint: "(shift+tab to cycle) · ← for agents",
+    hint: "read-only, propose a plan · shift+tab to change",
   },
 };
 
@@ -737,7 +731,7 @@ export function PromptComposer({
   onChange: (next: string) => void;
   onSubmit: (value: string) => void;
   placeholder?: string;
-  mode?: "auto" | "manual" | "accept-edits" | "plan";
+  mode?: PermissionMode;
   effort?: Effort;
 }): React.ReactElement {
   const m = PROMPT_MODES[mode];

@@ -113,3 +113,68 @@ export class AskUserGate implements PermissionGate, UiGate {
     return `${request.toolName}:${request.ruleKey}`;
   }
 }
+
+/** Permission modes the TUI can cycle through with shift+tab. */
+export type PermissionMode = "auto" | "manual" | "plan";
+
+/** Cycle order for shift+tab. */
+export const PERMISSION_MODES: readonly PermissionMode[] = ["auto", "manual", "plan"];
+
+export function nextPermissionMode(mode: PermissionMode): PermissionMode {
+  const i = PERMISSION_MODES.indexOf(mode);
+  return PERMISSION_MODES[(i + 1) % PERMISSION_MODES.length] ?? "auto";
+}
+
+/**
+ * A permission gate whose behaviour is switchable at runtime (shift+tab).
+ *
+ * - `auto`   — approve every mutating call; same as `--yolo`.
+ * - `manual` — ask the user; delegates to the wrapped `AskUserGate`.
+ * - `plan`   — refuse mutations, telling the agent to propose a plan first.
+ *
+ * It also implements `UiGate`, so one object backs both the harness and the
+ * TUI (which renders the prompts and the current mode).
+ */
+export class ModeGate implements PermissionGate, UiGate {
+  #mode: PermissionMode;
+  #ask: AskUserGate;
+
+  constructor(mode: PermissionMode = "manual", ask: AskUserGate = new AskUserGate()) {
+    this.#mode = mode;
+    this.#ask = ask;
+  }
+
+  get mode(): PermissionMode {
+    return this.#mode;
+  }
+
+  setMode(mode: PermissionMode): void {
+    this.#mode = mode;
+  }
+
+  // ── UiGate (forwarded to the inner AskUserGate) ──
+  onPendingChange(listener: (pending: PermissionRequest[]) => void): void {
+    this.#ask.onPendingChange(listener);
+  }
+
+  respond(id: string, response: PermissionResponse): void {
+    this.#ask.respond(id, response);
+  }
+
+  get allowedRules(): readonly string[] {
+    return this.#ask.allowedRules;
+  }
+
+  // ── PermissionGate ──
+  async check(request: PermissionRequest): Promise<PermissionDecision> {
+    if (this.#mode === "auto") return { allowed: true };
+    if (this.#mode === "plan") {
+      return {
+        allowed: false,
+        reason:
+          "plan mode is on: do not run mutating tools. Describe the plan and wait for the user to switch modes.",
+      };
+    }
+    return this.#ask.check(request);
+  }
+}

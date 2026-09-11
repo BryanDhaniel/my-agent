@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import {
   AskUserGate,
+  ModeGate,
+  nextPermissionMode,
   type PermissionRequest,
   type PermissionResponse,
 } from "./gate.js";
@@ -81,5 +83,76 @@ describe("AskUserGate session allowlist", () => {
 
     assert.equal(gate.allowedRules.length, 0);
     assert.deepEqual([...promptedIds].sort(), ["r1", "r2"]);
+  });
+});
+
+describe("nextPermissionMode", () => {
+  it("cycles auto -> manual -> plan -> auto", () => {
+    assert.equal(nextPermissionMode("auto"), "manual");
+    assert.equal(nextPermissionMode("manual"), "plan");
+    assert.equal(nextPermissionMode("plan"), "auto");
+  });
+});
+
+describe("ModeGate (shift+tab permission modes)", () => {
+  it("auto-approves every call in auto mode without prompting", async () => {
+    const gate = new ModeGate("auto");
+    let prompted = false;
+    gate.onPendingChange(() => {
+      prompted = true;
+    });
+    const decision = await gate.check(request());
+    assert.ok(decision.allowed);
+    assert.equal(prompted, false);
+  });
+
+  it("asks in manual mode, delegating to the inner AskUserGate", async () => {
+    const gate = new ModeGate("manual");
+    let prompted = false;
+    gate.onPendingChange((pending) => {
+      if (pending[0]) {
+        prompted = true;
+        setImmediate(() => gate.respond(pending[0]!.id, "once"));
+      }
+    });
+    const decision = await gate.check(request({ id: "r1" }));
+    assert.ok(decision.allowed);
+    assert.equal(prompted, true);
+  });
+
+  it("denies mutations in plan mode and tells the agent to plan", async () => {
+    const gate = new ModeGate("plan");
+    const decision = await gate.check(request());
+    assert.equal(decision.allowed, false);
+    assert.match((decision as { reason: string }).reason, /plan mode/i);
+  });
+
+  it("switching modes changes behaviour live", async () => {
+    const gate = new ModeGate("auto");
+    assert.ok((await gate.check(request())).allowed);
+
+    gate.setMode("plan");
+    assert.equal((await gate.check(request())).allowed, false);
+
+    gate.setMode("manual");
+    let prompted = false;
+    gate.onPendingChange((pending) => {
+      if (pending[0]) {
+        prompted = true;
+        setImmediate(() => gate.respond(pending[0]!.id, "deny"));
+      }
+    });
+    const denied = await gate.check(request({ id: "r9" }));
+    assert.equal(denied.allowed, false);
+    assert.equal(prompted, true);
+  });
+
+  it("forwards the session allowlist from the inner gate", async () => {
+    const gate = new ModeGate("manual");
+    gate.onPendingChange((pending) => {
+      if (pending[0]) setImmediate(() => gate.respond(pending[0]!.id, "always"));
+    });
+    await gate.check(request({ id: "r1", ruleKey: "npm" }));
+    assert.deepEqual([...gate.allowedRules], ["npm"]);
   });
 });

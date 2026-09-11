@@ -5,7 +5,8 @@ import type { CredentialValidator, ProviderManager } from "../providers/manager.
 import type { SetupPrompts } from "../providers/setup-flow.js";
 import { ProviderSetupFlow } from "../providers/setup-flow.js";
 import { getProvider, listModels } from "../providers/registry.js";
-import type { PermissionRequest, UiGate } from "../permissions/gate.js";
+import { nextPermissionMode } from "../permissions/gate.js";
+import type { PermissionMode, PermissionRequest, UiGate } from "../permissions/gate.js";
 import type { LoadedSession, SessionStore } from "../session/store.js";
 import type { ChatMessage } from "../agent/types.js";
 import { MarkdownLite } from "./markdown.js";
@@ -95,6 +96,8 @@ export function App({
   store,
   providers,
   validateCredential,
+  initialMode = "manual",
+  onModeChange,
 }: {
   service: AgentHarness;
   gate: UiGate;
@@ -102,6 +105,10 @@ export function App({
   providers: ProviderManager;
   /** Optional real validation during setup; absent means local checks only. */
   validateCredential?: CredentialValidator;
+  /** Starting permission mode (mirrors the gate; `--yolo` starts "auto"). */
+  initialMode?: PermissionMode;
+  /** Called when shift+tab cycles the mode, so the runtime gate follows. */
+  onModeChange?: (mode: PermissionMode) => void;
 }): React.ReactElement {
   const { exit } = useApp();
   const [view, setView] = useState<ChatViewState>(initialViewState);
@@ -111,6 +118,8 @@ export function App({
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [browser, setBrowser] = useState<BrowserState | undefined>();
   const [verboseTool, setVerboseTool] = useState(false);
+  /** Permission mode shown in the composer; shift+tab cycles it. */
+  const [permMode, setPermMode] = useState<PermissionMode>(initialMode);
   const abortRef = useRef<AbortController | undefined>(undefined);
   /** Synchronous "a turn is running" flag — see the guard in submit(). */
   const inFlightRef = useRef(false);
@@ -349,6 +358,15 @@ export function App({
     if (key.ctrl && input === "c") {
       abortRef.current?.abort();
       exit();
+      return;
+    }
+
+    // shift+tab cycles the permission mode (auto -> manual -> plan). Plain tab
+    // stays reserved for slash-command autocomplete below.
+    if (key.tab && key.shift) {
+      const next = nextPermissionMode(permMode);
+      setPermMode(next);
+      onModeChange?.(next);
       return;
     }
 
@@ -901,6 +919,7 @@ export function App({
             onChange={handleChange}
             onSubmit={submit}
             placeholder="Ask a question, or / for commands"
+            mode={permMode}
             effort="high"
           />
         </>

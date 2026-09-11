@@ -1,11 +1,25 @@
 import {
   GoogleGenAI,
+  ThinkingLevel,
   type GenerateContentConfig,
   type GenerateContentResponse,
 } from "@google/genai";
 import type { AssistantMessage, ChatMessage } from "../agent/types.js";
-import type { Provider, StreamEvent, StreamOptions } from "./provider.js";
+import type { Provider, ReasoningEffort, StreamEvent, StreamOptions } from "./provider.js";
+import { modelSupportsReasoning } from "./registry.js";
 import type { TokenUsage } from "../observability/usage.js";
+
+/**
+ * Our effort levels mapped onto Gemini's `ThinkingLevel`. Gemini only offers
+ * MINIMAL/LOW/MEDIUM/HIGH, so the two highest levels both clamp to HIGH.
+ */
+const GEMINI_THINKING_LEVEL: Record<ReasoningEffort, ThinkingLevel> = {
+  low: ThinkingLevel.LOW,
+  medium: ThinkingLevel.MEDIUM,
+  high: ThinkingLevel.HIGH,
+  xhigh: ThinkingLevel.HIGH,
+  max: ThinkingLevel.HIGH,
+};
 import {
   GeminiCallAccumulator,
   toGeminiRequest,
@@ -23,11 +37,16 @@ export class GeminiProvider implements Provider {
   readonly name = "gemini";
   readonly model: string;
   #client: GoogleGenAI;
+  #reasoningEffort?: ReasoningEffort;
 
   /** `client` is injectable so tests can drive it without network access. */
   constructor(apiKey: string, model: string, client?: GoogleGenAI) {
     this.#client = client ?? new GoogleGenAI({ apiKey });
     this.model = model;
+  }
+
+  setReasoningEffort(effort: ReasoningEffort): void {
+    this.#reasoningEffort = effort;
   }
 
   async *stream(
@@ -43,6 +62,13 @@ export class GeminiProvider implements Provider {
       config.tools = [{ functionDeclarations: toGeminiTools(tools) }];
     }
     if (options?.signal !== undefined) config.abortSignal = options.signal;
+
+    // Thinking config is only sent for models the registry marks as reasoning;
+    // an unsupported thinkingConfig is rejected by the API.
+    const requested = options?.reasoningEffort ?? this.#reasoningEffort;
+    if (requested !== undefined && modelSupportsReasoning(this.name, this.model)) {
+      config.thinkingConfig = { thinkingLevel: GEMINI_THINKING_LEVEL[requested] };
+    }
 
     let chunks;
     try {

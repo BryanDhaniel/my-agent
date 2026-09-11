@@ -4,7 +4,8 @@ import type {
   ChatMessage,
   ToolCallRequest,
 } from "../agent/types.js";
-import type { Provider, StreamEvent, StreamOptions } from "./provider.js";
+import type { Provider, ReasoningEffort, StreamEvent, StreamOptions } from "./provider.js";
+import { modelSupportsReasoning } from "./registry.js";
 import type { TokenUsage } from "../observability/usage.js";
 
 function toOpenAiMessage(m: ChatMessage): OpenAI.Chat.Completions.ChatCompletionMessageParam {
@@ -62,6 +63,7 @@ export class OpenAIProvider implements Provider {
   readonly name = "openai";
   readonly model: string;
   #client: OpenAI;
+  #reasoningEffort?: ReasoningEffort;
 
   /**
    * `baseURL` retargets the same OpenAI wire format at a compatible endpoint
@@ -74,11 +76,22 @@ export class OpenAIProvider implements Provider {
     this.model = model;
   }
 
+  setReasoningEffort(effort: ReasoningEffort): void {
+    this.#reasoningEffort = effort;
+  }
+
   async *stream(
     messages: ChatMessage[],
     options?: StreamOptions,
   ): AsyncGenerator<StreamEvent> {
     const tools = options?.tools ?? [];
+    // Only send reasoning_effort for models the registry marks as reasoning:
+    // the parameter is a 400 on a plain chat model (gpt-4o, gpt-4.1).
+    const requested = options?.reasoningEffort ?? this.#reasoningEffort;
+    const reasoningEffort =
+      requested !== undefined && modelSupportsReasoning(this.name, this.model)
+        ? requested
+        : undefined;
     let completion;
     try {
       completion = await this.#client.chat.completions.create(
@@ -97,6 +110,7 @@ export class OpenAIProvider implements Provider {
                 })),
               }
             : {}),
+          ...(reasoningEffort !== undefined ? { reasoning_effort: reasoningEffort } : {}),
           stream: true,
           // Ask the API to include token usage in the final streamed chunk so
           // evaluation can report authoritative counts instead of estimates.

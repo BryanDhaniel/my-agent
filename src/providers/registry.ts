@@ -99,8 +99,10 @@ export const PROVIDERS: readonly ProviderDefinition[] = [
     },
     defaultModel: DEFAULT_MODELS.gemini,
     models: models("gemini", [
-      ["gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", 1_048_576, { tools: true, vision: true }],
-      ["gemini-3.8-flash", "Gemini 3.8 Flash", 1_048_576, { tools: true, vision: true }],
+      // Gemini 3 models think; the `reasoning` flag lets /effort drive
+      // thinkingConfig.thinkingLevel (see GeminiProvider).
+      ["gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", 1_048_576, { tools: true, vision: true, reasoning: true }],
+      ["gemini-3.8-flash", "Gemini 3.8 Flash", 1_048_576, { tools: true, vision: true, reasoning: true }],
     ]),
   },
   {
@@ -152,6 +154,15 @@ export function findModel(
 
 export function defaultModelFor(providerId: string): string | undefined {
   return BY_ID.get(providerId)?.defaultModel;
+}
+
+/**
+ * True when the model accepts reasoning controls (OpenAI `reasoning_effort`,
+ * Gemini `thinkingConfig`). Sending those to any other model is a 400, so the
+ * providers gate on this.
+ */
+export function modelSupportsReasoning(providerId: string, modelId: string): boolean {
+  return findModel(providerId, modelId)?.capabilities?.reasoning === true;
 }
 
 /**

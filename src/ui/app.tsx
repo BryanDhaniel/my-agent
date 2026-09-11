@@ -14,7 +14,10 @@ import { SessionBrowser } from "./session-browser.js";
 import { SLASH_COMMANDS, suggestCommands } from "./commands.js";
 import {
   Diff,
+  type Effort,
   ErrorLine,
+  isEffort,
+  nextEffort,
   NoticeLine,
   Panel,
   Paper,
@@ -120,6 +123,8 @@ export function App({
   const [verboseTool, setVerboseTool] = useState(false);
   /** Permission mode shown in the composer; shift+tab cycles it. */
   const [permMode, setPermMode] = useState<PermissionMode>(initialMode);
+  /** Reasoning effort shown in the composer; /effort sets it. */
+  const [effort, setEffort] = useState<Effort>("high");
   const abortRef = useRef<AbortController | undefined>(undefined);
   /** Synchronous "a turn is running" flag — see the guard in submit(). */
   const inFlightRef = useRef(false);
@@ -352,6 +357,13 @@ export function App({
     });
     return () => gate.onPendingChange(() => {});
   }, [gate]);
+
+  // Keep the provider's reasoning effort in sync with the composer chip. The
+  // provider ignores it when the active model does not support reasoning, so
+  // this never sends an unsupported parameter.
+  useEffect(() => {
+    service.setReasoningEffort(effort);
+  }, [service, effort]);
 
 
   useInput((input, key) => {
@@ -595,6 +607,14 @@ export function App({
     }
     if (head === "/model") {
       openModels(rest[0]);
+      return true;
+    }
+    if (head === "/effort") {
+      // `/effort <level>` sets it; bare `/effort` cycles to the next level.
+      const requested = rest[0]?.toLowerCase();
+      const next = requested !== undefined && isEffort(requested) ? requested : nextEffort(effort);
+      setEffort(next);
+      setView((s) => appendNotice(s, `reasoning effort: ${next}`));
       return true;
     }
 
@@ -920,7 +940,7 @@ export function App({
             onSubmit={submit}
             placeholder="Ask a question, or / for commands"
             mode={permMode}
-            effort="high"
+            effort={effort}
           />
         </>
       )}

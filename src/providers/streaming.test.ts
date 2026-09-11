@@ -4,6 +4,8 @@ import type { GoogleGenAI } from "@google/genai";
 import type OpenAI from "openai";
 import { GeminiProvider } from "./gemini.js";
 import { GLM_BASE_URL, GLMProvider } from "./glm.js";
+import { OpenAIProvider } from "./openai.js";
+import { modelSupportsReasoning } from "./registry.js";
 import type { StreamEvent } from "./provider.js";
 
 /**
@@ -219,5 +221,65 @@ describe("GLMProvider streaming", () => {
     const events = await collect(provider.stream([{ role: "user", content: "hi" }]));
     assert.equal(events.length, 1);
     assert.equal(events[0]?.type, "error");
+  });
+});
+
+describe("reasoning effort", () => {
+  it("registry flags the Gemini 3 models as reasoning-capable", () => {
+    assert.equal(modelSupportsReasoning("gemini", "gemini-3.8-flash"), true);
+    assert.equal(modelSupportsReasoning("gemini", "gemini-3.5-flash-lite"), true);
+    // Plain chat models must NOT be flagged, or they would 400 on the parameter.
+    assert.equal(modelSupportsReasoning("openai", "gpt-4o"), false);
+  });
+
+  it("Gemini sends thinkingConfig only for a reasoning model", async () => {
+    const captureConfig = async (
+      model: string,
+    ): Promise<Record<string, unknown> | undefined> => {
+      let config: Record<string, unknown> | undefined;
+      const client = {
+        models: {
+          generateContentStream: async (req: { config?: Record<string, unknown> }) => {
+            config = req.config;
+            return (async function* () {
+              yield { text: "ok" };
+            })();
+          },
+        },
+      } as unknown as GoogleGenAI;
+
+      const provider = new GeminiProvider("k", model, client);
+      provider.setReasoningEffort("high");
+      await collect(provider.stream([{ role: "user", content: "hi" }]));
+      return config;
+    };
+
+    const flagged = await captureConfig("gemini-3.8-flash");
+    assert.deepEqual(flagged?.["thinkingConfig"], { thinkingLevel: "HIGH" });
+
+    const plain = await captureConfig("gemini-2.5-flash"); // not in the registry
+    assert.equal(plain?.["thinkingConfig"], undefined);
+  });
+
+  it("OpenAI omits reasoning_effort for a non-reasoning model", async () => {
+    let captured: Record<string, unknown> = {};
+    const client = {
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            captured = params;
+            return (async function* () {
+              yield { choices: [{ delta: { content: "ok" } }] };
+            })();
+          },
+        },
+      },
+    } as unknown as OpenAI;
+
+    const provider = new OpenAIProvider("k", "gpt-4o", undefined, client);
+    provider.setReasoningEffort("high");
+    await collect(provider.stream([{ role: "user", content: "hi" }]));
+
+    assert.equal(captured["reasoning_effort"], undefined);
   });
 });

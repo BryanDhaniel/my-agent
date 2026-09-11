@@ -15,7 +15,7 @@ describe("suggestCommands", () => {
     );
     assert.deepEqual(
       suggestCommands("/E").map((c) => c.name),
-      ["exit"],
+      ["effort", "exit"], // "/e" now matches both, in declaration order
     );
   });
 

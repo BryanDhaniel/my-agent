@@ -11,6 +11,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "session", description: "list, switch to, or delete sessions" },
   { name: "provider", description: "select or configure a provider" },
   { name: "model", description: "select a model for the active provider" },
+  { name: "effort", description: "set reasoning effort (low, medium, high, xhigh, max)" },
   { name: "skills", description: "list available skills" },
   { name: "exit", description: "quit my-agent" },
 ];

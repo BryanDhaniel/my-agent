@@ -2,6 +2,7 @@ import { Box, Text, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import React, { useEffect, useState } from "react";
 import type { PermissionMode, PermissionRequest } from "../permissions/gate.js";
+import type { ReasoningEffort } from "../providers/provider.js";
 import type { SlashCommand } from "./commands.js";
 import type { PanelView, ToolView } from "./view.js";
 import {
@@ -699,8 +700,26 @@ const PROMPT_MODES: Record<
   },
 };
 
-/** Effort levels, ported from claude-prompt. */
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
+/**
+ * Effort levels shown in the composer. Deliberately identical to the
+ * providers' own enum (ReasoningEffort) so the value can be forwarded as-is;
+ * "ultracode" was dropped because no provider accepts it.
+ */
+export type Effort = ReasoningEffort;
+
+/** Cycle order for `/effort`. */
+export const EFFORT_LEVELS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
+
+/** Next effort level, wrapping around — used when `/effort` is called bare. */
+export function nextEffort(current: Effort): Effort {
+  const i = EFFORT_LEVELS.indexOf(current);
+  return EFFORT_LEVELS[(i + 1) % EFFORT_LEVELS.length] ?? "high";
+}
+
+/** True when `value` is one of the known effort levels. */
+export function isEffort(value: string): value is Effort {
+  return (EFFORT_LEVELS as readonly string[]).includes(value);
+}
 
 const EFFORTS: Record<Effort, { glyph: string; label: string }> = {
   low: { glyph: "○", label: "low" },
@@ -708,10 +727,6 @@ const EFFORTS: Record<Effort, { glyph: string; label: string }> = {
   high: { glyph: "●", label: "high" },
   xhigh: { glyph: "◉", label: "xhigh" },
   max: { glyph: "◈", label: "max" },
-  ultracode: {
-    glyph: "✦",
-    label: "ultracode",
-  },
 };
 
 /**

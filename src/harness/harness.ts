@@ -1,5 +1,5 @@
 import type { AssistantMessage, ChatMessage } from "../agent/types.js";
-import type { Provider } from "../providers/provider.js";
+import type { Provider, ReasoningEffort } from "../providers/provider.js";
 import { ToolRegistry } from "../agent/registry.js";
 import { defaultRegistry } from "../agent/tools/index.js";
 import { DenyAllGate, type PermissionGate, type PermissionRequest, type PermissionResponse, type PermissionDecision } from "../permissions/gate.js";
@@ -250,6 +250,15 @@ export class AgentHarness {
       provider: provider.name,
       model: provider.model,
     };
+  }
+
+  /**
+   * Hint how much reasoning effort to spend, for subsequent runs. Providers
+   * whose model does not support it ignore the call, so nothing is sent and
+   * the request is never rejected.
+   */
+  setReasoningEffort(effort: ReasoningEffort): void {
+    this.#provider.setReasoningEffort?.(effort);
   }
 
   /** Which provider and model the next run will use. */

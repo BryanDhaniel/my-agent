@@ -14,10 +14,11 @@ import { SessionBrowser } from "./session-browser.js";
 import { SLASH_COMMANDS, suggestCommands } from "./commands.js";
 import {
   Diff,
+  EFFORT_DESCRIPTIONS,
+  EFFORT_LEVELS,
   type Effort,
   ErrorLine,
   isEffort,
-  nextEffort,
   NoticeLine,
   Panel,
   Paper,
@@ -246,6 +247,35 @@ export function App({
         }
         closeFlow();
         void applyModel(id);
+      },
+    });
+  };
+
+  /**
+   * `/effort <level>` sets it directly (scriptable); bare `/effort` opens a
+   * picker so changing it is ↑/↓ + enter instead of repeated typing.
+   */
+  const openEffort = (level?: string): void => {
+    if (level !== undefined && isEffort(level)) {
+      setEffort(level);
+      setView((s) => appendNotice(s, `reasoning effort: ${level}`));
+      return;
+    }
+    setFlow({
+      kind: "pick",
+      title: "Select reasoning effort",
+      items: EFFORT_LEVELS.map((l) => ({
+        id: l,
+        label: l,
+        detail: l === effort ? "active" : EFFORT_DESCRIPTIONS[l],
+      })),
+      selected: Math.max(0, EFFORT_LEVELS.indexOf(effort)),
+      onPick: (id) => {
+        closeFlow();
+        if (isEffort(id)) {
+          setEffort(id);
+          setView((s) => appendNotice(s, `reasoning effort: ${id}`));
+        }
       },
     });
   };
@@ -610,11 +640,8 @@ export function App({
       return true;
     }
     if (head === "/effort") {
-      // `/effort <level>` sets it; bare `/effort` cycles to the next level.
-      const requested = rest[0]?.toLowerCase();
-      const next = requested !== undefined && isEffort(requested) ? requested : nextEffort(effort);
-      setEffort(next);
-      setView((s) => appendNotice(s, `reasoning effort: ${next}`));
+      // `/effort <level>` sets it directly; bare `/effort` opens a picker.
+      openEffort(rest[0]?.toLowerCase());
       return true;
     }
 

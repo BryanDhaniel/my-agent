@@ -707,14 +707,17 @@ const PROMPT_MODES: Record<
  */
 export type Effort = ReasoningEffort;
 
-/** Cycle order for `/effort`. */
+/** All effort levels, in display order (also the `/effort` picker order). */
 export const EFFORT_LEVELS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
 
-/** Next effort level, wrapping around — used when `/effort` is called bare. */
-export function nextEffort(current: Effort): Effort {
-  const i = EFFORT_LEVELS.indexOf(current);
-  return EFFORT_LEVELS[(i + 1) % EFFORT_LEVELS.length] ?? "high";
-}
+/** Short description per level, shown beside the label in the `/effort` picker. */
+export const EFFORT_DESCRIPTIONS: Record<Effort, string> = {
+  low: "fastest · minimal thinking",
+  medium: "balanced",
+  high: "more thinking",
+  xhigh: "heavy reasoning",
+  max: "maximum reasoning",
+};
 
 /** True when `value` is one of the known effort levels. */
 export function isEffort(value: string): value is Effort {
